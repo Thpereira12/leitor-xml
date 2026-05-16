@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Leitor de XML Fiscal</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="workspace">
+        <aside class="input-panel" aria-label="Entrada do XML">
+          <div class="brand">
+            <div class="brand-mark" aria-hidden="true">XML</div>
+            <div>
+              <h1>Leitor de XML Fiscal</h1>
+              <p>Analise NF-e, confira totais e detalhe impostos.</p>
+            </div>
+          </div>
+
+          <label class="drop-zone" for="xmlFile" id="dropZone">
+            <span class="drop-icon" aria-hidden="true">+</span>
+            <strong>Selecionar XML da NF-e</strong>
+            <span>ou arraste o arquivo para esta area</span>
+          </label>
+          <input id="xmlFile" class="file-input" type="file" accept=".xml,text/xml,application/xml" />
+
+          <label class="paste-label" for="xmlText">Colar XML</label>
+          <textarea id="xmlText" spellcheck="false" placeholder="Cole aqui o conteudo do XML..."></textarea>
+
+          <div class="actions">
+            <button id="analyzeBtn" type="button">Analisar XML</button>
+            <button id="clearBtn" type="button" class="secondary">Limpar</button>
+          </div>
+
+          <p id="status" class="status" role="status">Aguardando XML.</p>
+        </aside>
+
+        <section class="results" aria-label="Resultado da analise">
+          <div class="summary-strip" id="summaryStrip">
+            <div>
+              <span>vProd</span>
+              <strong id="sumVProd">R$ 0,00</strong>
+            </div>
+            <div>
+              <span>vNF</span>
+              <strong id="sumVNF">R$ 0,00</strong>
+            </div>
+            <div>
+              <span>Prod x NF</span>
+              <strong id="sumDiff">R$ 0,00</strong>
+            </div>
+            <div>
+              <span>Itens</span>
+              <strong id="sumItems">0</strong>
+            </div>
+          </div>
+
+          <section class="invoice-highlight" aria-label="Identificacao da NF-e">
+            <div class="invoice-main">
+              <span>Numero da NF</span>
+              <strong id="invoiceNumberHighlight">-</strong>
+            </div>
+            <div class="invoice-main">
+              <span>Serie</span>
+              <strong id="invoiceSeriesHighlight">-</strong>
+            </div>
+            <div class="invoice-wide">
+              <span>Natureza da operacao</span>
+              <strong id="invoiceNatureHighlight">-</strong>
+            </div>
+            <div class="invoice-wide">
+              <span>Emitente</span>
+              <strong id="invoiceIssuerHighlight">-</strong>
+            </div>
+            <div class="invoice-wide">
+              <span>Destinatario</span>
+              <strong id="invoiceRecipientHighlight">-</strong>
+            </div>
+          </section>
+
+          <details class="result-section" open>
+            <summary class="section-header">
+              <h2>Totais da NF-e</h2>
+              <span id="invoiceMeta">Sem XML carregado</span>
+            </summary>
+            <div class="metrics-grid" id="totalsGrid"></div>
+          </details>
+
+          <details class="result-section" open>
+            <summary class="section-header">
+              <h2>Conferencia do calculo</h2>
+              <span id="formulaStatus">Aguardando analise</span>
+            </summary>
+            <div class="calculation-box">
+              <div id="formulaLine" class="formula-line">vProd - vDesc - vICMSDeson + vST + vFCPST + vFrete + vSeg + vOutro + vII + vIPI + vIPIDevol</div>
+              <div id="calcBreakdown" class="calc-breakdown"></div>
+            </div>
+          </details>
+
+          <details class="result-section" open>
+            <summary class="section-header">
+              <h2>Validacoes SEFAZ / schema</h2>
+              <span id="validationStatus">Aguardando analise</span>
+            </summary>
+            <div class="validation-box">
+              <div id="validationList" class="validation-list"></div>
+            </div>
+          </details>
+
+          <h2 class="topic-title">Topicos de conferencia</h2>
+
+          <details class="result-section">
+            <summary class="section-header">
+              <h2>Despesas acessorias</h2>
+              <span id="expensesStatus">Nenhuma informacao</span>
+            </summary>
+            <div class="metrics-grid compact" id="expensesGrid"></div>
+          </details>
+
+          <details class="result-section">
+            <summary class="section-header">
+              <h2>Impostos por CST/CSOSN</h2>
+              <span id="taxStatus">Bases e valores somados por imposto</span>
+            </summary>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Imposto</th>
+                    <th>CST/CSOSN</th>
+                    <th>Base</th>
+                    <th>Valor</th>
+                    <th>Itens</th>
+                  </tr>
+                </thead>
+                <tbody id="taxTable"></tbody>
+              </table>
+            </div>
+          </details>
+
+          <details class="result-section">
+            <summary class="section-header">
+              <h2>Conferencia de importacao</h2>
+              <span id="importStatus">Sem itens de importacao</span>
+            </summary>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Item</th>
+                    <th>Produto</th>
+                    <th>DI</th>
+                    <th>Base II</th>
+                    <th>Desp. aduaneira</th>
+                    <th>II</th>
+                    <th>IOF</th>
+                  </tr>
+                </thead>
+                <tbody id="importTable"></tbody>
+              </table>
+            </div>
+          </details>
+
+          <details class="result-section">
+            <summary class="section-header">
+              <h2>Itens</h2>
+              <span id="itemsStatus">Produtos e totais por linha</span>
+            </summary>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Codigo</th>
+                    <th>Descricao</th>
+                    <th>NCM</th>
+                    <th>CFOP</th>
+                    <th>vProd</th>
+                    <th>vFrete</th>
+                    <th>vDesc</th>
+                  </tr>
+                </thead>
+                <tbody id="itemsTable"></tbody>
+              </table>
+            </div>
+          </details>
+        </section>
+      </section>
+    </main>
+
+    <template id="metricTemplate">
+      <article class="metric">
+        <span></span>
+        <strong></strong>
+      </article>
+    </template>
+
+    <script src="app.js"></script>
+  </body>
+</html>
