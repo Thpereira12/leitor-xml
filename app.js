@@ -276,22 +276,23 @@
 
   function renderAll(data) {
     const { nfe, infNFe, totals, items, taxes, imports, validations, expected, calculationDiff, productInvoiceDiff } = data;
-    const ide = first(nfe, "ide");
-    const emit = first(nfe, "emit");
-    const dest = first(nfe, "dest");
-    const invoiceNumber = textOf(ide, "nNF") || "-";
-    const series = textOf(ide, "serie") || "-";
-    const nature = textOf(ide, "natOp") || "Natureza nao informada";
-    const issuer = textOf(emit, "xNome") || "Emitente nao informado";
-    const recipient = textOf(dest, "xNome") || "Destinatario nao informado";
+    const ide = child(infNFe, "ide");
+    const emit = child(infNFe, "emit");
+    const dest = child(infNFe, "dest");
+    const invoiceNumber = childText(ide, "nNF") || "-";
+    const series = childText(ide, "serie") || "-";
+    const nature = childText(ide, "natOp") || "Natureza nao informada";
+    const issuer = childText(emit, "xNome") || "Emitente nao informado";
+    const recipient = childText(dest, "xNome") || "Destinatario nao informado";
     const accessKey = (infNFe.getAttribute("Id") || "").replace(/^NFe/, "");
 
     fields.invoiceMeta.textContent = `NF ${invoiceNumber} | Serie ${series} | ${issuer}`;
     fields.invoiceNumberHighlight.textContent = invoiceNumber;
     fields.invoiceSeriesHighlight.textContent = series;
     fields.invoiceNatureHighlight.textContent = nature;
-    fields.invoiceIssuerHighlight.textContent = withDocument(issuer, textOf(emit, "CNPJ") || textOf(emit, "CPF"));
-    fields.invoiceRecipientHighlight.textContent = withDocument(recipient, textOf(dest, "CNPJ") || textOf(dest, "CPF") || textOf(dest, "idEstrangeiro"));
+    fields.invoiceNatureHighlight.title = nature;
+    fields.invoiceIssuerHighlight.textContent = withDocument(issuer, childText(emit, "CNPJ") || childText(emit, "CPF"));
+    fields.invoiceRecipientHighlight.textContent = withDocument(recipient, childText(dest, "CNPJ") || childText(dest, "CPF") || childText(dest, "idEstrangeiro"));
     fields.sumVProd.textContent = formatMoney(totals.vProd);
     fields.sumVNF.textContent = formatMoney(totals.vNF);
     fields.sumDiff.textContent = formatMoney(productInvoiceDiff);
@@ -349,9 +350,9 @@
 
   function validateSefazRules(context) {
     const { rawCharacterIssues, doc, nfe, infNFe, icmsTot, totals, items, expected, calculationDiff } = context;
-    const ide = first(nfe, "ide");
-    const emit = first(nfe, "emit");
-    const dest = first(nfe, "dest");
+    const ide = child(infNFe, "ide");
+    const emit = child(infNFe, "emit");
+    const dest = child(infNFe, "dest");
     const issues = [];
 
     issues.push(...baseValidationNotice(), ...rawCharacterIssues);
@@ -378,7 +379,7 @@
       addIssue(issues, "warn", "Versao diferente de 4.00", `A versao informada e ${version}. Confirme se o schema usado corresponde a esta versao.`);
     }
 
-    const model = textOf(ide, "mod");
+    const model = childText(ide, "mod");
     if (model && model !== "55") {
       addIssue(issues, "warn", "Modelo diferente de NF-e", `O modelo informado e ${model}. Para NF-e modelo 55, o valor esperado e 55.`);
     } else if (!model) {
@@ -386,20 +387,20 @@
     }
 
     ["cUF", "natOp", "serie", "nNF", "tpNF", "idDest", "cMunFG", "tpImp", "tpEmis", "cDV", "tpAmb", "finNFe", "procEmi", "verProc"].forEach((tag) => {
-      if (!textOf(ide, tag)) {
+      if (!childText(ide, tag)) {
         addIssue(issues, "warn", `Campo ide/${tag} ausente`, "Campo comum em NF-e e relevante para regras de autorizacao.");
       }
     });
 
-    if (!textOf(ide, "dhEmi") && !textOf(ide, "dEmi")) {
+    if (!childText(ide, "dhEmi") && !childText(ide, "dEmi")) {
       addIssue(issues, "warn", "Data de emissao ausente", "Nao foi encontrada dhEmi ou dEmi.");
     }
 
-    if (!textOf(emit, "CNPJ") && !textOf(emit, "CPF")) {
+    if (!childText(emit, "CNPJ") && !childText(emit, "CPF")) {
       addIssue(issues, "error", "Documento do emitente ausente", "O emitente deve ter CNPJ ou CPF informado.");
     }
 
-    if (dest && !textOf(dest, "CNPJ") && !textOf(dest, "CPF") && !textOf(dest, "idEstrangeiro")) {
+    if (dest && !childText(dest, "CNPJ") && !childText(dest, "CPF") && !childText(dest, "idEstrangeiro")) {
       addIssue(issues, "warn", "Documento do destinatario ausente", "Quando houver destinatario, normalmente deve existir CNPJ, CPF ou idEstrangeiro.");
     }
 
@@ -640,7 +641,7 @@
       addIssue(issues, "error", "Digito verificador da chave nao confere", `Digito informado ${informedDigit}, calculado ${calculatedDigit}.`);
     }
 
-    const ideDigit = textOf(ide, "cDV");
+    const ideDigit = childText(ide, "cDV");
     if (ideDigit && ideDigit !== accessKey.slice(-1)) {
       addIssue(issues, "error", "cDV diferente da chave de acesso", `ide/cDV e ${ideDigit}, mas a chave termina em ${accessKey.slice(-1)}.`);
     }
@@ -918,6 +919,7 @@
     fields.invoiceNumberHighlight.textContent = "-";
     fields.invoiceSeriesHighlight.textContent = "-";
     fields.invoiceNatureHighlight.textContent = "-";
+    fields.invoiceNatureHighlight.title = "";
     fields.invoiceIssuerHighlight.textContent = "-";
     fields.invoiceRecipientHighlight.textContent = "-";
     fields.formulaStatus.textContent = "Aguardando analise";
@@ -954,6 +956,16 @@
     if (!root) return [];
     const namespaced = Array.from(root.getElementsByTagNameNS("*", localName));
     return namespaced.length ? namespaced : Array.from(root.getElementsByTagName(localName));
+  }
+
+  function child(root, localName) {
+    if (!root) return null;
+    return Array.from(root.children).find((node) => node.localName === localName) || null;
+  }
+
+  function childText(root, localName) {
+    const node = child(root, localName);
+    return node ? node.textContent.trim() : "";
   }
 
   function textOf(root, localName) {
