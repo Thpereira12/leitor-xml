@@ -445,31 +445,59 @@
   }
 
   function validateXmlTextFields(issues, doc) {
-    const suspicious = findSuspiciousTextCharacters(doc);
-    if (suspicious.length) {
-      suspicious.slice(0, 8).forEach((entry) => {
+    const encodingIssues = findEncodingTextIssues(doc);
+    appendLimitedIssues(
+      issues,
+      encodingIssues,
+      8,
+      (entry) =>
         addIssue(
           issues,
           "warn",
-          `Caracter especial em ${entry.path}`,
-          `Encontrado ${summarizeCharacters(entry.characters)} no valor "${entry.preview}". Confirme se o caractere e aceito pelo schema/SEFAZ para este campo.`,
-        );
-      });
+          `Possivel problema de codificacao em ${entry.path}`,
+          `O valor "${entry.preview}" contem sequencias como ${entry.matches.join(", ")}. Isso costuma indicar texto UTF-8 interpretado incorretamente, como letras acentuadas exibidas com prefixos estranhos.`,
+        ),
+      "Mais campos com possivel problema de codificacao",
+    );
 
-      if (suspicious.length > 8) {
-        addIssue(issues, "warn", "Multiplos caracteres especiais", `Ha mais ${suspicious.length - 8} campo(s) com caracteres especiais suspeitos nao listados para manter a leitura objetiva.`);
-      }
-    }
+    const suspicious = findSuspiciousTextCharacters(doc);
+    appendLimitedIssues(
+      issues,
+      suspicious,
+      8,
+      (entry) =>
+        addIssue(
+          issues,
+          "warn",
+          `Caracter fora do perfil do campo em ${entry.path}`,
+          `Encontrado ${summarizeCharacters(entry.characters)} no valor "${entry.preview}". O XML pode ate estar bem formado, mas este campo deve ser revisado contra o schema e as regras da SEFAZ.`,
+        ),
+      "Mais campos com caracteres fora do perfil",
+    );
+
+    const lengthIssues = findTextLengthIssues(doc);
+    appendLimitedIssues(
+      issues,
+      lengthIssues,
+      8,
+      (entry) => addIssue(issues, "warn", `Tamanho suspeito em ${entry.path}`, `O campo possui ${entry.length} caractere(s). Perfil esperado: ${entry.min}-${entry.max}. Valor: "${entry.preview}".`),
+      "Mais campos com tamanho suspeito",
+    );
 
     const spacingIssues = findTextSpacingIssues(doc);
-    spacingIssues.slice(0, 8).forEach((entry) => {
-      addIssue(
-        issues,
-        "warn",
-        `Espacamento suspeito em ${entry.path}`,
-        `O valor "${entry.preview}" possui quebra de linha, tabulacao, espaco duplo ou espaco no inicio/fim. Isso pode causar rejeicao ou problema de assinatura.`,
-      );
-    });
+    appendLimitedIssues(
+      issues,
+      spacingIssues,
+      8,
+      (entry) =>
+        addIssue(
+          issues,
+          "warn",
+          `Espacamento suspeito em ${entry.path}`,
+          `O valor "${entry.preview}" possui quebra de linha, tabulacao, espaco duplo ou espaco no inicio/fim. Isso pode causar rejeicao ou problema de assinatura.`,
+        ),
+      "Mais campos com espacamento suspeito",
+    );
   }
 
   function findInvalidXmlCharacters(xmlText) {
@@ -482,29 +510,15 @@
   }
 
   function findSuspiciousTextCharacters(doc) {
-    const textTags = [
-      "natOp",
-      "xNome",
-      "xFant",
-      "xLgr",
-      "xBairro",
-      "xMun",
-      "xPais",
-      "xProd",
-      "uCom",
-      "uTrib",
-      "infAdProd",
-      "infCpl",
-      "email",
-    ];
-    const allowedPattern = /^[A-Za-z0-9 .,;:/()\-+'"_@]*$/;
+    const textTags = Object.keys(textFieldProfiles).filter((tag) => tag !== "default");
     const entries = [];
 
     textTags.forEach((tag) => {
       all(doc, tag).forEach((node) => {
         const value = (node.textContent || "").trim();
         if (!value) return;
-        const chars = uniqueCharacters(Array.from(value).filter((char) => !allowedPattern.test(char)));
+        const profile = textFieldProfiles[tag] || textFieldProfiles.default;
+        const chars = uniqueCharacters(Array.from(value).filter((char) => !profile.allowed.test(char)));
         if (chars.length) {
           entries.push({
             path: buildNodePath(node),
@@ -518,22 +532,78 @@
     return entries;
   }
 
+  const generalTextPattern = /^[A-Za-z0-9\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u00FF .,;:/()\-+'"_%@&\u00BA\u00AA]*$/;
+  const cityCountryPattern = /^[A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u00FF .'-]*$/;
+  const unitPattern = /^[A-Za-z0-9 .\-_/]*$/;
+  const emailPattern = /^[A-Za-z0-9._%+\-@;]*$/;
+
+  const textFieldProfiles = {
+    default: { min: 1, max: 5000, allowed: generalTextPattern },
+    natOp: { min: 1, max: 60, allowed: generalTextPattern },
+    xNome: { min: 2, max: 60, allowed: generalTextPattern },
+    xFant: { min: 1, max: 60, allowed: generalTextPattern },
+    xLgr: { min: 2, max: 60, allowed: generalTextPattern },
+    xCpl: { min: 1, max: 60, allowed: generalTextPattern },
+    xEnder: { min: 1, max: 60, allowed: generalTextPattern },
+    xBairro: { min: 2, max: 60, allowed: generalTextPattern },
+    xMun: { min: 2, max: 60, allowed: cityCountryPattern },
+    xPais: { min: 2, max: 60, allowed: cityCountryPattern },
+    xProd: { min: 1, max: 120, allowed: generalTextPattern },
+    uCom: { min: 1, max: 6, allowed: unitPattern },
+    uTrib: { min: 1, max: 6, allowed: unitPattern },
+    esp: { min: 1, max: 60, allowed: generalTextPattern },
+    infAdProd: { min: 1, max: 500, allowed: generalTextPattern },
+    infCpl: { min: 1, max: 5000, allowed: generalTextPattern },
+    xContato: { min: 2, max: 60, allowed: generalTextPattern },
+    email: { min: 1, max: 60, allowed: emailPattern },
+  };
+
+  function findEncodingTextIssues(doc) {
+    const entries = [];
+    Object.keys(textFieldProfiles).forEach((tag) => {
+      if (tag === "default") return;
+      all(doc, tag).forEach((node) => {
+        const value = (node.textContent || "").trim();
+        if (!value) return;
+        const matches = uniqueMatches(value, /(\u00C3.|\u00C2.|\u00E2.|\uFFFD)/g);
+        if (matches.length) {
+          entries.push({
+            path: buildNodePath(node),
+            preview: truncate(value, 100),
+            matches,
+          });
+        }
+      });
+    });
+
+    return dedupeEntries(entries, (entry) => `${entry.path}|${entry.preview}|${entry.matches.join("")}`);
+  }
+
+  function findTextLengthIssues(doc) {
+    const entries = [];
+    Object.entries(textFieldProfiles).forEach(([tag, profile]) => {
+      if (tag === "default") return;
+      all(doc, tag).forEach((node) => {
+        const value = (node.textContent || "").trim();
+        if (!value) return;
+        const length = Array.from(value).length;
+        if (length < profile.min || length > profile.max) {
+          entries.push({
+            path: buildNodePath(node),
+            preview: truncate(value, 100),
+            length,
+            min: profile.min,
+            max: profile.max,
+          });
+        }
+      });
+    });
+
+    return entries;
+  }
+
   function findTextSpacingIssues(doc) {
-    const textTags = [
-      "natOp",
-      "xNome",
-      "xFant",
-      "xLgr",
-      "xBairro",
-      "xMun",
-      "xPais",
-      "xProd",
-      "uCom",
-      "uTrib",
-      "infAdProd",
-      "infCpl",
-      "email",
-    ];
+    const textTags = Object.keys(textFieldProfiles).filter((tag) => tag !== "default");
     const entries = [];
 
     textTags.forEach((tag) => {
@@ -655,6 +725,14 @@
     issues.push({ severity, title, detail });
   }
 
+  function appendLimitedIssues(issues, entries, limit, appendEntry, overflowTitle) {
+    const uniqueEntries = dedupeEntries(entries, (entry) => `${entry.path}|${entry.preview || ""}|${entry.title || ""}`);
+    uniqueEntries.slice(0, limit).forEach(appendEntry);
+    if (uniqueEntries.length > limit) {
+      addIssue(issues, "warn", overflowTitle, `Ha mais ${uniqueEntries.length - limit} campo(s) nao listados para manter a leitura objetiva.`);
+    }
+  }
+
   function renderValidations(validations) {
     const counts = validations.reduce(
       (acc, issue) => {
@@ -695,6 +773,20 @@
 
   function uniqueCharacters(characters) {
     return Array.from(new Set(characters));
+  }
+
+  function uniqueMatches(value, pattern) {
+    return Array.from(new Set(Array.from(value.matchAll(pattern), (match) => match[0])));
+  }
+
+  function dedupeEntries(entries, keyFactory) {
+    const seen = new Set();
+    return entries.filter((entry) => {
+      const key = keyFactory(entry);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   }
 
   function summarizeCharacters(characters) {
