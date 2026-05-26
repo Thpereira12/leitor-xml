@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Leitor XML Fiscal</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="popup-shell">
+      <header class="brand">
+        <img src="assets/logo-mark.png" alt="" />
+        <div>
+          <h1>Leitor XML</h1>
+          <p>Cole o XML da nota fiscal para abrir a analise no site.</p>
+        </div>
+      </header>
+
+      <label for="xmlInput">XML da NF-e/NFC-e</label>
+      <textarea id="xmlInput" spellcheck="false" placeholder="Cole Aqui o XML da Nota Fiscal"></textarea>
+
+      <div class="actions">
+        <button id="pasteBtn" class="secondary" type="button">Colar</button>
+        <button id="analyzeBtn" type="button">Analisar no Leitor XML</button>
+      </div>
+
+      <p id="status" class="status" role="status"></p>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>
