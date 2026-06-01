@@ -62,9 +62,22 @@
   const knownTaxCodes = {
     ICMS: ["00", "10", "20", "30", "40", "41", "50", "51", "60", "70", "90", "101", "102", "103", "201", "202", "203", "300", "400", "500", "900"],
     IPI: ["00", "01", "02", "03", "04", "05", "49", "50", "51", "52", "53", "54", "55", "99"],
-    PIS: ["01", "02", "03", "04", "05", "06", "07", "08", "09", "49", "50", "51", "52", "53", "54", "55", "56", "60", "61", "62", "63", "64", "65", "66", "67", "70", "71", "72", "73", "74", "75", "98", "99"],
-    COFINS: ["01", "02", "03", "04", "05", "06", "07", "08", "09", "49", "50", "51", "52", "53", "54", "55", "56", "60", "61", "62", "63", "64", "65", "66", "67", "70", "71", "72", "73", "74", "75", "98", "99"],
+    PIS: ["00", "01", "02", "03", "04", "05", "06", "07", "08", "09", "49", "50", "51", "52", "53", "54", "55", "56", "60", "61", "62", "63", "64", "65", "66", "67", "70", "71", "72", "73", "74", "75", "98", "99"],
+    COFINS: ["00", "01", "02", "03", "04", "05", "06", "07", "08", "09", "49", "50", "51", "52", "53", "54", "55", "56", "60", "61", "62", "63", "64", "65", "66", "67", "70", "71", "72", "73", "74", "75", "98", "99"],
   };
+  const nfsePisCofinsRetentionCodes = {
+    0: "PIS/COFINS/CSLL Nao Retidos",
+    1: "PIS/COFINS Retidos",
+    2: "PIS/COFINS Nao Retidos",
+    3: "PIS/COFINS/CSLL Retidos",
+    4: "PIS/COFINS Retidos, CSLL Nao Retido",
+    5: "PIS Retido, COFINS/CSLL Nao Retido",
+    6: "COFINS Retido, PIS/CSLL Nao Retido",
+    7: "PIS Nao Retido, COFINS/CSLL Retidos",
+    8: "PIS/COFINS Nao Retidos, CSLL Retido",
+    9: "COFINS Nao Retido, PIS/CSLL Retidos",
+  };
+  const nfsePisCofinsRetentionWithValue = new Set(["1", "3", "4", "5", "6", "7", "8", "9"]);
 
   let currentAnalysis = null;
   fields.xmlFile.addEventListener("change", async (event) => {
@@ -568,6 +581,7 @@
       if (invoice.number === "-") addIssue(issues, "warn", "Numero da NFS-e ausente", "Nao encontrei Numero/NumeroNfse no XML de servico.");
       if (!first(doc, "Servico")) addIssue(issues, "warn", "Grupo de servico ausente", "Nao encontrei a tag Servico; a leitura tributaria da NFS-e pode ficar incompleta.");
       if (!totals.vProd && !totals.vNF) addIssue(issues, "warn", "Valores da NFS-e ausentes", "Nao encontrei ValorServicos, ValorLiquidoNfse ou equivalentes.");
+      validateNfsePisCofins(issues, doc);
     } else {
       if (!first(doc, "NFe")) addIssue(issues, "error", "Estrutura NFe ausente", "Nao encontrei a tag NFe no XML.");
       if (!invoice.key || invoice.key === "-" || !/^\d{44}$/.test(invoice.key)) addIssue(issues, "error", "Chave de acesso invalida", "A chave deve ter 44 digitos.");
@@ -597,6 +611,65 @@
     }
     addIssue(issues, "info", "Schema NF-e detectado", `Raiz ${root}; versao ${invoice.schemaVersion || "-"}. A leitura local confere estrutura, chave, totais e grupos tributarios principais.`);
     if (!invoice.schemaVersion || invoice.schemaVersion === "-") addIssue(issues, "warn", "Versao do schema ausente", "Nao encontrei o atributo versao em infNFe/NFe.");
+  }
+
+  function validateNfsePisCofins(issues, doc) {
+    const groups = all(doc, "piscofins");
+    const hasIbsCbs = Boolean(first(doc, "IBSCBS"));
+    if (!groups.length) {
+      const retained = firstValue(doc, ["vRetCSLL"]);
+      if (retained > 0) addIssue(issues, "error", "Retencao federal sem grupo piscofins", "Foi informado vRetCSLL, mas nao encontrei o grupo tribFed/piscofins com tpRetPisCofins.");
+      return;
+    }
+
+    groups.forEach((group, index) => {
+      const context = groups.length > 1 ? `grupo piscofins ${index + 1}` : "grupo piscofins";
+      const cst = firstText(group, ["CST"]);
+      const retentionCode = firstText(group, ["tpRetPisCofins"]);
+      const retainedValue = firstValue(group.parentElement || doc, ["vRetCSLL"]);
+      const pisValue = firstValue(group, ["vPis", "vPIS"]);
+      const cofinsValue = firstValue(group, ["vCofins", "vCOFINS"]);
+      const pisBase = firstValue(group, ["vBCPisCofins"]);
+      const pisRate = normalizeRate(firstValue(group, ["pAliqPis"]));
+      const cofinsRate = normalizeRate(firstValue(group, ["pAliqCofins"]));
+
+      if (!cst) {
+        addIssue(issues, "error", "CST de PIS/COFINS ausente", `O ${context} possui informacoes de PIS/COFINS, mas nao trouxe a tag CST. No layout nacional, CST e obrigatorio quando o grupo piscofins e informado.`);
+      } else if (!knownTaxCodes.PIS.includes(cst)) {
+        addIssue(issues, "warn", "CST de PIS/COFINS incomum", `CST ${cst} no ${context}. Confira o dominio aceito para PIS/COFINS.`);
+      }
+
+      if (!retentionCode) {
+        if (retainedValue > 0) addIssue(issues, "error", "tpRetPisCofins ausente", `Existe vRetCSLL ${formatMoney(retainedValue)}, mas o ${context} nao informou tpRetPisCofins.`);
+      } else if (!Object.prototype.hasOwnProperty.call(nfsePisCofinsRetentionCodes, retentionCode)) {
+        addIssue(issues, "error", "tpRetPisCofins invalido", `Valor informado: ${retentionCode}. O dominio atual aceita os codigos 0 a 9.`);
+      } else {
+        addIssue(issues, "info", "tpRetPisCofins identificado", `${retentionCode} - ${nfsePisCofinsRetentionCodes[retentionCode]}.`);
+      }
+
+      if (hasIbsCbs && ["1", "2"].includes(retentionCode)) {
+        addIssue(issues, "warn", "tpRetPisCofins transitorio com IBSCBS", "Os codigos 1 e 2 foram mantidos temporariamente, mas a NT 007 informa que serao suprimidos quando IBSCBS se tornar obrigatorio.");
+      }
+
+      if (retentionCode === "0" && retainedValue > 0) {
+        addIssue(issues, "error", "Retencao inconsistente com tpRetPisCofins", `tpRetPisCofins 0 indica PIS/COFINS/CSLL nao retidos, mas vRetCSLL esta em ${formatMoney(retainedValue)}.`);
+      }
+
+      if (nfsePisCofinsRetentionWithValue.has(retentionCode) && retainedValue <= 0) {
+        addIssue(issues, "warn", "Retencao sem vRetCSLL", `${retentionCode} - ${nfsePisCofinsRetentionCodes[retentionCode]}, mas vRetCSLL nao foi encontrado ou esta zerado.`);
+      }
+
+      if (pisBase > 0 && pisRate > 0 && pisValue > 0) validateFederalTaxMath(issues, "PIS", pisBase, pisRate, pisValue, context);
+      if (pisBase > 0 && cofinsRate > 0 && cofinsValue > 0) validateFederalTaxMath(issues, "COFINS", pisBase, cofinsRate, cofinsValue, context);
+    });
+  }
+
+  function validateFederalTaxMath(issues, taxName, base, rate, actual, context) {
+    const expected = round2(base * rate / 100);
+    const diff = round2(actual - expected);
+    if (Math.abs(diff) > 0.01) {
+      addIssue(issues, "warn", `${taxName} com calculo divergente`, `${context}: base ${formatMoney(base)} x aliquota ${number.format(rate)}% = ${formatMoney(expected)}, informado ${formatMoney(actual)}.`);
+    }
   }
 
   function validateTaxClassifications(issues, items) {
