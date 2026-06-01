@@ -707,7 +707,7 @@ select {
 
 table {
   width: 100%;
-  min-width: 820px;
+  min-width: 900px;
   border-collapse: collapse;
 }
 
@@ -730,6 +730,25 @@ td.money,
 td.number {
   text-align: right;
   white-space: nowrap;
+}
+
+tr.tax-warning td {
+  background: #fff8e4;
+}
+
+.tax-warning {
+  border-color: rgba(176, 110, 0, 0.35);
+}
+
+.tax-code-missing {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-weight: 900;
 }
 
 .item-card {

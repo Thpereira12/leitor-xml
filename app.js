@@ -59,6 +59,12 @@
   const totalKeys = ["vProd", "vNF", "vBC", "vICMS", "vBCST", "vST", "vIPI", "vPIS", "vCOFINS", "vFrete", "vSeg", "vDesc", "vOutro", "vII", "vICMSDeson", "vFCPST", "vIPIDevol"];
   const textTags = ["natOp", "xNome", "xFant", "xLgr", "xCpl", "xEnder", "xBairro", "xMun", "xPais", "xProd", "uCom", "uTrib", "esp", "infAdProd", "infCpl", "xContato", "email"];
   const generalTextPattern = /^[A-Za-z0-9\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u00FF .,;:/()\-+'"_%@&\u00BA\u00AA]*$/;
+  const knownTaxCodes = {
+    ICMS: ["00", "10", "20", "30", "40", "41", "50", "51", "60", "70", "90", "101", "102", "103", "201", "202", "203", "300", "400", "500", "900"],
+    IPI: ["00", "01", "02", "03", "04", "05", "49", "50", "51", "52", "53", "54", "55", "99"],
+    PIS: ["01", "02", "03", "04", "05", "06", "07", "08", "09", "49", "50", "51", "52", "53", "54", "55", "56", "60", "61", "62", "63", "64", "65", "66", "67", "70", "71", "72", "73", "74", "75", "98", "99"],
+    COFINS: ["01", "02", "03", "04", "05", "06", "07", "08", "09", "49", "50", "51", "52", "53", "54", "55", "56", "60", "61", "62", "63", "64", "65", "66", "67", "70", "71", "72", "73", "74", "75", "98", "99"],
+  };
 
   let currentAnalysis = null;
   fields.xmlFile.addEventListener("change", async (event) => {
@@ -124,6 +130,18 @@
   }
 
   function buildAnalysis(doc, rawXml, formattedXml, rawIssues) {
+    const documentType = detectDocumentType(doc);
+    if (documentType === "nfse") return buildNfseAnalysis(doc, rawXml, formattedXml, rawIssues);
+    return buildNfeAnalysis(doc, rawXml, formattedXml, rawIssues, documentType);
+  }
+
+  function detectDocumentType(doc) {
+    if (first(doc, "NFe") && first(first(doc, "NFe"), "infNFe")) return "nfe";
+    if (first(doc, "Nfse") || first(doc, "CompNfse") || first(doc, "InfNfse") || first(doc, "ListaNfse") || first(doc, "DeclaracaoPrestacaoServico")) return "nfse";
+    return "unknown";
+  }
+
+  function buildNfeAnalysis(doc, rawXml, formattedXml, rawIssues, documentType) {
     const nfe = first(doc, "NFe");
     const infNFe = first(nfe, "infNFe");
     const ide = child(infNFe, "ide");
@@ -131,17 +149,40 @@
     const dest = child(infNFe, "dest");
     const icmsTot = first(infNFe, "ICMSTot");
     if (!nfe || !infNFe || !ide || !icmsTot) {
-      throw new Error("Nao encontrei uma estrutura NF-e/NFC-e valida com NFe, infNFe, ide e ICMSTot.");
+      throw new Error("Nao encontrei uma estrutura NF-e/NFC-e/NFS-e valida. Confira se o XML contem NFe/infNFe/ICMSTot ou Nfse/InfNfse/Servico.");
     }
 
     const totals = readTotals(icmsTot);
     const items = all(infNFe, "det").map(readItem);
     const invoice = readInvoice(doc, infNFe, ide);
+    invoice.documentType = documentType;
+    invoice.schemaVersion = infNFe.getAttribute("versao") || nfe.getAttribute("versao") || "-";
     const parties = { issuer: readParty(emit), recipient: readParty(dest) };
     const taxSummary = summarizeTaxes(items);
     const imports = items.flatMap((item) => item.imports);
     const stItems = items.filter((item) => item.icmsST.hasST);
     const totalChecks = buildTotalChecks(totals, items);
+    const validations = validateAnalysis({ doc, rawXml, rawIssues, invoice, parties, totals, items, totalChecks });
+    const report = buildReport({ invoice, parties, totals, items, taxSummary, imports, stItems, validations, totalChecks });
+
+    return { doc, formattedXml, invoice, parties, totals, items, taxSummary, imports, stItems, totalChecks, validations, report };
+  }
+
+  function buildNfseAnalysis(doc, rawXml, formattedXml, rawIssues) {
+    const nfse = first(doc, "Nfse") || first(doc, "CompNfse") || doc.documentElement;
+    const infNfse = first(doc, "InfNfse") || nfse;
+    const servico = first(doc, "Servico") || first(doc, "Valores") || infNfse;
+    const totals = readNfseTotals(doc);
+    const items = readNfseItems(doc, totals);
+    const invoice = readNfseInvoice(doc, infNfse, servico);
+    const parties = {
+      issuer: readNfseParty(doc, ["PrestadorServico", "Prestador", "PrestadorNfse"]),
+      recipient: readNfseParty(doc, ["TomadorServico", "Tomador", "TomadorNfse"]),
+    };
+    const taxSummary = summarizeTaxes(items);
+    const imports = [];
+    const stItems = [];
+    const totalChecks = buildNfseTotalChecks(totals);
     const validations = validateAnalysis({ doc, rawXml, rawIssues, invoice, parties, totals, items, totalChecks });
     const report = buildReport({ invoice, parties, totals, items, taxSummary, imports, stItems, validations, totalChecks });
 
@@ -166,6 +207,26 @@
     };
   }
 
+  function readNfseInvoice(doc, infNfse, servico) {
+    const codigoVerificacao = firstText(doc, ["CodigoVerificacao", "CodigoVerificacaoNfse", "Protocolo"]);
+    const schemaVersion = infNfse.getAttribute("versao") || doc.documentElement.getAttribute("versao") || "-";
+    return {
+      documentType: "nfse",
+      schemaVersion,
+      number: firstText(doc, ["Numero", "NumeroNfse", "NumeroNota"]) || "-",
+      series: firstText(doc, ["Serie", "SerieRps"]) || "-",
+      key: codigoVerificacao || firstText(doc, ["ChaveAcesso", "ChaveNFe", "Numero"]) || "-",
+      model: "NFS-e",
+      issuedAt: firstText(doc, ["DataEmissao", "DataEmissaoNfse", "Competencia"]) || "-",
+      nature: firstText(servico, ["Discriminacao", "DescricaoServico", "CodigoTributacaoMunicipio", "ItemListaServico"]) || "Prestacao de servico",
+      operationType: "Servico",
+      purpose: "-",
+      protocol: codigoVerificacao || "-",
+      authorization: codigoVerificacao ? `Codigo de verificacao ${codigoVerificacao}` : "Sem codigo de verificacao no XML",
+      statusCode: firstText(doc, ["CodigoStatus", "Status"]) || "-",
+    };
+  }
+
   function readParty(node) {
     return {
       document: childText(node, "CNPJ") || childText(node, "CPF") || childText(node, "idEstrangeiro") || "-",
@@ -176,11 +237,42 @@
     };
   }
 
+  function readNfseParty(doc, possibleTags) {
+    const node = possibleTags.map((tag) => first(doc, tag)).find(Boolean);
+    return {
+      document: firstText(node, ["Cnpj", "CNPJ", "Cpf", "CPF", "CpfCnpj", "IdentificacaoTomador"]) || "-",
+      name: firstText(node, ["RazaoSocial", "NomeFantasia", "Nome", "xNome"]) || "-",
+      ie: firstText(node, ["InscricaoMunicipal", "InscricaoEstadual", "IE"]) || "-",
+      crt: "-",
+      ieIndicator: "-",
+    };
+  }
+
   function readTotals(icmsTot) {
     return totalKeys.reduce((acc, key) => {
       acc[key] = valueOf(icmsTot, key);
       return acc;
     }, {});
+  }
+
+  function readNfseTotals(doc) {
+    const totals = totalKeys.reduce((acc, key) => {
+      acc[key] = 0;
+      return acc;
+    }, {});
+    const serviceValue = firstValue(doc, ["ValorServicos", "ValorServico", "ValorTotalServicos"]);
+    const base = firstValue(doc, ["BaseCalculo", "BaseCalculoIss", "ValorBaseCalculo"]);
+    const discount = firstValue(doc, ["DescontoIncondicionado", "DescontoCondicionado"]);
+    const iss = firstValue(doc, ["ValorIss", "ValorISS", "ValorIssRetido"]);
+    totals.vProd = serviceValue;
+    totals.vNF = firstValue(doc, ["ValorLiquidoNfse", "ValorLiquido", "ValorTotal"]) || serviceValue;
+    totals.vBC = base || serviceValue;
+    totals.vDesc = discount;
+    totals.vICMS = iss;
+    totals.vPIS = firstValue(doc, ["ValorPis", "ValorPIS"]);
+    totals.vCOFINS = firstValue(doc, ["ValorCofins", "ValorCOFINS"]);
+    totals.vOutro = firstValue(doc, ["OutrasRetencoes", "ValorInss", "ValorIr", "ValorCsll"]);
+    return totals;
   }
 
   function readItem(det, index) {
@@ -239,10 +331,15 @@
     if (!wrapper) return null;
     const group = Array.from(wrapper.children).find((node) => node.localName && node.localName.startsWith("ICMS"));
     if (!group) return null;
+    const code = readTaxCode(group, ["CST", "CSOSN"], group.localName.replace("ICMS", ""));
     return {
       tax: "ICMS",
       group: group.localName,
-      cst: textOf(group, "CST") || textOf(group, "CSOSN") || group.localName.replace("ICMS", ""),
+      cst: code.value,
+      cstRaw: code.raw,
+      cstSource: code.source,
+      missingCst: code.missing,
+      requiresCst: true,
       origin: textOf(group, "orig") || "-",
       base: valueOf(group, "vBC"),
       rate: valueOf(group, "pICMS"),
@@ -268,10 +365,15 @@
     const wrapper = first(imposto, taxName);
     if (!wrapper) return null;
     const group = groupNames.map((name) => first(wrapper, name)).find(Boolean) || wrapper;
+    const code = readTaxCode(group, ["CST"], "");
     return {
       tax: taxName,
       group: group.localName,
-      cst: textOf(group, "CST") || "-",
+      cst: code.value,
+      cstRaw: code.raw,
+      cstSource: code.source,
+      missingCst: code.missing,
+      requiresCst: true,
       base: valueOf(group, "vBC"),
       rate: valueOf(group, rateName),
       value: valueOf(group, valueName),
@@ -285,11 +387,72 @@
       tax: "II",
       group: "II",
       cst: "Importacao",
+      cstRaw: "Importacao",
+      cstSource: "grupo",
+      missingCst: false,
+      requiresCst: false,
       base: valueOf(group, "vBC"),
       rate: 0,
       value: valueOf(group, "vII"),
       customs: valueOf(group, "vDespAdu"),
       iof: valueOf(group, "vIOF"),
+    };
+  }
+
+  function readNfseItems(doc, totals) {
+    const servico = first(doc, "Servico") || first(doc, "Valores") || doc.documentElement;
+    const description = firstText(servico, ["Discriminacao", "DescricaoServico", "Descricao"]) || "Servico";
+    const code = firstText(servico, ["ItemListaServico", "CodigoServico", "CodigoTributacaoMunicipio"]) || "-";
+    const issRate = normalizeRate(firstValue(servico, ["Aliquota", "AliquotaIss", "pISS"]));
+    const taxes = [
+      createServiceTax("ISS", totals.vBC, issRate, totals.vICMS),
+      createServiceTax("PIS", totals.vBC, normalizeRate(firstValue(servico, ["AliquotaPis", "AliquotaPIS"])), totals.vPIS),
+      createServiceTax("COFINS", totals.vBC, normalizeRate(firstValue(servico, ["AliquotaCofins", "AliquotaCOFINS"])), totals.vCOFINS),
+      createServiceTax("INSS", totals.vBC, normalizeRate(firstValue(servico, ["AliquotaInss", "AliquotaINSS"])), firstValue(servico, ["ValorInss", "ValorINSS"])),
+      createServiceTax("IR", totals.vBC, normalizeRate(firstValue(servico, ["AliquotaIr", "AliquotaIR"])), firstValue(servico, ["ValorIr", "ValorIR"])),
+      createServiceTax("CSLL", totals.vBC, normalizeRate(firstValue(servico, ["AliquotaCsll", "AliquotaCSLL"])), firstValue(servico, ["ValorCsll", "ValorCSLL"])),
+    ].filter((tax) => tax.value || tax.rate || tax.tax === "ISS");
+
+    return [{
+      index: "1",
+      code,
+      description,
+      ncm: "Servico",
+      cest: "-",
+      cfop: code,
+      quantity: 1,
+      unit: "SERV",
+      unitValue: totals.vProd,
+      total: totals.vProd,
+      discount: totals.vDesc,
+      freight: 0,
+      insurance: 0,
+      other: 0,
+      taxes,
+      icms: null,
+      icmsST: { hasST: false },
+      ipi: null,
+      pis: taxes.find((tax) => tax.tax === "PIS") || null,
+      cofins: taxes.find((tax) => tax.tax === "COFINS") || null,
+      ii: null,
+      imports: [],
+      issues: [],
+      searchText: "",
+    }];
+  }
+
+  function createServiceTax(tax, base, rate, value) {
+    return {
+      tax,
+      group: "NFS-e",
+      cst: "N/A",
+      cstRaw: "N/A",
+      cstSource: "nao aplicavel",
+      missingCst: false,
+      requiresCst: false,
+      base,
+      rate,
+      value,
     };
   }
 
@@ -334,13 +497,15 @@
     const map = new Map();
     items.flatMap((item) => item.taxes).forEach((tax) => {
       const key = `${tax.tax}|${tax.cst}`;
-      const current = map.get(key) || { tax: tax.tax, cst: tax.cst, base: 0, value: 0, itemCount: 0 };
+      const current = map.get(key) || { tax: tax.tax, cst: tax.cst, base: 0, value: 0, itemCount: 0, rates: [], missingCst: false, requiresCst: tax.requiresCst !== false };
       current.base += tax.base || 0;
       current.value += tax.value || 0;
       current.itemCount += 1;
+      current.missingCst = current.missingCst || Boolean(tax.missingCst);
+      if (Number.isFinite(tax.rate)) addUniqueRate(current.rates, tax.rate);
       map.set(key, current);
     });
-    return Array.from(map.values()).sort((a, b) => a.tax.localeCompare(b.tax) || String(a.cst).localeCompare(String(b.cst)));
+    return Array.from(map.values()).map((tax) => ({ ...tax, rateLabel: formatRateList(tax.rates) })).sort((a, b) => a.tax.localeCompare(b.tax) || String(a.cst).localeCompare(String(b.cst)));
   }
 
   function buildTotalChecks(totals, items) {
@@ -356,23 +521,65 @@
     return checks;
   }
 
+  function buildNfseTotalChecks(totals) {
+    const expected = round2(totals.vProd - totals.vDesc);
+    return [
+      compareTotal("Valor servicos", totals.vProd, totals.vBC || totals.vProd),
+      { label: "Valor liquido NFS-e", expected, actual: totals.vNF, diff: round2(totals.vNF - expected), ok: !totals.vNF || Math.abs(totals.vNF - expected) <= 0.01 || totals.vOutro > 0 },
+    ];
+  }
+
   function validateAnalysis(context) {
     const { doc, rawXml, rawIssues, invoice, parties, totals, items, totalChecks } = context;
     const issues = [...baseValidationNotice(), ...rawIssues];
-    if (!first(doc, "NFe")) addIssue(issues, "error", "Estrutura NFe ausente", "Nao encontrei a tag NFe no XML.");
-    if (!invoice.key || invoice.key === "-" || !/^\d{44}$/.test(invoice.key)) addIssue(issues, "error", "Chave de acesso invalida", "A chave deve ter 44 digitos.");
-    if (invoice.key && /^\d{44}$/.test(invoice.key)) {
-      const digit = calculateAccessKeyDigit(invoice.key.slice(0, 43));
-      if (digit !== Number(invoice.key.slice(-1))) addIssue(issues, "error", "Digito da chave nao confere", `Digito calculado ${digit}, informado ${invoice.key.slice(-1)}.`);
+    validateSchemaHints(issues, doc, invoice);
+    if (invoice.documentType === "nfse") {
+      if (invoice.number === "-") addIssue(issues, "warn", "Numero da NFS-e ausente", "Nao encontrei Numero/NumeroNfse no XML de servico.");
+      if (!first(doc, "Servico")) addIssue(issues, "warn", "Grupo de servico ausente", "Nao encontrei a tag Servico; a leitura tributaria da NFS-e pode ficar incompleta.");
+      if (!totals.vProd && !totals.vNF) addIssue(issues, "warn", "Valores da NFS-e ausentes", "Nao encontrei ValorServicos, ValorLiquidoNfse ou equivalentes.");
+    } else {
+      if (!first(doc, "NFe")) addIssue(issues, "error", "Estrutura NFe ausente", "Nao encontrei a tag NFe no XML.");
+      if (!invoice.key || invoice.key === "-" || !/^\d{44}$/.test(invoice.key)) addIssue(issues, "error", "Chave de acesso invalida", "A chave deve ter 44 digitos.");
+      if (invoice.key && /^\d{44}$/.test(invoice.key)) {
+        const digit = calculateAccessKeyDigit(invoice.key.slice(0, 43));
+        if (digit !== Number(invoice.key.slice(-1))) addIssue(issues, "error", "Digito da chave nao confere", `Digito calculado ${digit}, informado ${invoice.key.slice(-1)}.`);
+      }
+      if (!["55", "65"].includes(invoice.model)) addIssue(issues, "warn", "Modelo diferente de NF-e/NFC-e", `Modelo encontrado: ${invoice.model}.`);
     }
-    if (!["55", "65"].includes(invoice.model)) addIssue(issues, "warn", "Modelo diferente de NF-e/NFC-e", `Modelo encontrado: ${invoice.model}.`);
     if (parties.issuer.document === "-") addIssue(issues, "error", "Documento do emitente ausente", "CNPJ/CPF do emitente nao encontrado.");
     if (parties.recipient.document === "-") addIssue(issues, "warn", "Documento do destinatario ausente", "CNPJ/CPF/idEstrangeiro do destinatario nao encontrado.");
     totalChecks.filter((check) => !check.ok).forEach((check) => addIssue(issues, "warn", `Divergencia em ${check.label}`, `Informado ${formatMoney(check.actual)}; calculado ${formatMoney(check.expected)}; diferenca ${formatMoney(check.diff)}.`));
+    validateTaxClassifications(issues, items);
     items.forEach((item) => item.issues.forEach((issue) => addIssue(issues, "warn", `Item ${item.index}: ${issue}`, item.description)));
     validateTextFields(issues, doc);
     if (rawXml.includes("<nfeProc") && invoice.protocol === "-") addIssue(issues, "warn", "Protocolo nao identificado", "O XML parece autorizado, mas nao encontrei nProt.");
     return issues;
+  }
+
+  function validateSchemaHints(issues, doc, invoice) {
+    const root = doc.documentElement ? doc.documentElement.localName : "-";
+    if (invoice.documentType === "nfse") {
+      addIssue(issues, "info", "Schema NFS-e detectado", `Raiz ${root}; versao ${invoice.schemaVersion || "-"}. A NFS-e varia por municipio/provedor, entao os campos equivalentes sao mapeados por nomes conhecidos.`);
+      return;
+    }
+    addIssue(issues, "info", "Schema NF-e detectado", `Raiz ${root}; versao ${invoice.schemaVersion || "-"}. A leitura local confere estrutura, chave, totais e grupos tributarios principais.`);
+    if (!invoice.schemaVersion || invoice.schemaVersion === "-") addIssue(issues, "warn", "Versao do schema ausente", "Nao encontrei o atributo versao em infNFe/NFe.");
+  }
+
+  function validateTaxClassifications(issues, items) {
+    items.forEach((item) => {
+      item.taxes.forEach((tax) => {
+        if (tax.requiresCst && tax.missingCst) {
+          addIssue(issues, "warn", `Item ${item.index}: ${tax.tax} sem CST/CSOSN`, `Grupo ${tax.group} nao informou CST/CSOSN ou trouxe a tag em branco. Produto/servico: ${item.description}.`);
+        }
+        if (tax.requiresCst && tax.cst !== "-" && knownTaxCodes[tax.tax] && !knownTaxCodes[tax.tax].includes(String(tax.cst))) {
+          addIssue(issues, "warn", `Item ${item.index}: ${tax.tax} com CST/CSOSN incomum`, `Codigo ${tax.cst} no grupo ${tax.group}. Confira o schema e a regra tributaria aplicavel.`);
+        }
+        if ((tax.base || tax.value) && !tax.rate && tax.tax !== "II") {
+          addIssue(issues, "info", `Item ${item.index}: ${tax.tax} sem aliquota`, `Ha base ou valor para ${tax.tax}, mas a aliquota nao foi encontrada no grupo ${tax.group}.`);
+        }
+      });
+    });
   }
 
   function validateRawXmlText(xmlText) {
@@ -425,21 +632,21 @@
     const warns = analysis.validations.filter((issue) => issue.severity === "warn").length;
     fields.validationBadge.className = `status-badge ${errors ? "error" : warns ? "warn" : "ok"}`;
     fields.validationBadge.textContent = errors ? "Com erros" : warns ? "Com alertas" : "Sem alertas criticos";
-    fields.heroTitle.textContent = `NF ${analysis.invoice.number} serie ${analysis.invoice.series}`;
+    fields.heroTitle.textContent = `${analysis.invoice.documentType === "nfse" ? "NFS-e" : "NF"} ${analysis.invoice.number} serie ${analysis.invoice.series}`;
     fields.heroSubtitle.textContent = `${analysis.invoice.nature} | ${analysis.invoice.operationType} | ${analysis.invoice.authorization}`;
     fields.heroVNF.textContent = formatMoney(analysis.totals.vNF);
     fields.heroItems.textContent = String(analysis.items.length);
     fields.heroAlerts.textContent = String(errors + warns);
     setText(fields.nfNumber, analysis.invoice.number);
     setText(fields.nfSeries, analysis.invoice.series);
-    setText(fields.nfModel, `${analysis.invoice.model} (${analysis.invoice.model === "65" ? "NFC-e" : "NF-e"})`);
+    setText(fields.nfModel, modelLabel(analysis.invoice));
     setText(fields.nfDate, formatDate(analysis.invoice.issuedAt));
     setText(fields.nfNature, analysis.invoice.nature);
     setText(fields.nfKey, analysis.invoice.key);
     fields.overviewAlertCount.textContent = `${errors + warns} encontrados`;
     fields.overviewTaxCount.textContent = `${analysis.taxSummary.length} agrupamentos`;
     fields.topAlerts.innerHTML = renderIssueList(analysis.validations.filter((issue) => issue.severity !== "info").slice(0, 5), "Nenhum alerta critico.");
-    fields.highlightTaxes.innerHTML = analysis.taxSummary.slice(0, 8).map((tax) => `<article class="tax-chip"><span>${escapeHtml(tax.tax)} CST ${escapeHtml(tax.cst)}</span><strong>${formatMoney(tax.value)}</strong><p>${formatMoney(tax.base)} de base | ${tax.itemCount} item(ns)</p></article>`).join("") || emptyState("Sem impostos identificados.");
+    fields.highlightTaxes.innerHTML = analysis.taxSummary.slice(0, 8).map((tax) => `<article class="tax-chip ${tax.missingCst ? "tax-warning" : ""}"><span>${escapeHtml(tax.tax)} CST ${escapeHtml(tax.cst)} | Aliq. ${escapeHtml(tax.rateLabel)}</span><strong>${formatMoney(tax.value)}</strong><p>${formatMoney(tax.base)} de base | ${tax.itemCount} item(ns)</p></article>`).join("") || emptyState("Sem impostos identificados.");
   }
 
   function renderValidations(validations) {
@@ -461,11 +668,11 @@
 
   function renderTaxes(analysis) {
     fields.taxSummary.textContent = `${analysis.taxSummary.length} grupos por imposto/CST`;
-    fields.taxSummaryGrid.innerHTML = analysis.taxSummary.map((tax) => metric(`${tax.tax} ${tax.cst}`, formatMoney(tax.value))).join("") || emptyState("Sem impostos.");
+    fields.taxSummaryGrid.innerHTML = analysis.taxSummary.map((tax) => metric(`${tax.tax} ${tax.cst} | Aliq. ${tax.rateLabel}`, formatMoney(tax.value), tax.missingCst)).join("") || emptyState("Sem impostos.");
     fields.taxTableWrap.innerHTML = `
       <table>
-        <thead><tr><th>Imposto</th><th>CST/CSOSN</th><th>Base</th><th>Valor</th><th>Itens</th></tr></thead>
-        <tbody>${analysis.taxSummary.map((tax) => `<tr><td>${escapeHtml(tax.tax)}</td><td>${escapeHtml(tax.cst)}</td><td class="money">${formatMoney(tax.base)}</td><td class="money">${formatMoney(tax.value)}</td><td class="number">${tax.itemCount}</td></tr>`).join("")}</tbody>
+        <thead><tr><th>Imposto</th><th>CST/CSOSN</th><th>Aliquota</th><th>Base</th><th>Valor</th><th>Itens</th></tr></thead>
+        <tbody>${analysis.taxSummary.map((tax) => `<tr class="${tax.missingCst ? "tax-warning" : ""}"><td>${escapeHtml(tax.tax)}</td><td>${taxCodeCell(tax)}</td><td class="number">${escapeHtml(tax.rateLabel)}</td><td class="money">${formatMoney(tax.base)}</td><td class="money">${formatMoney(tax.value)}</td><td class="number">${tax.itemCount}</td></tr>`).join("")}</tbody>
       </table>
     `;
   }
@@ -476,7 +683,7 @@
   }
 
   function renderItemCard(item) {
-    const taxRows = item.taxes.map((tax) => `<div><span>${escapeHtml(tax.tax)} ${escapeHtml(tax.cst)}</span><strong>${formatMoney(tax.value)}</strong></div>`).join("");
+    const taxRows = item.taxes.map((tax) => `<div><span>${escapeHtml(tax.tax)} ${escapeHtml(tax.cst)} | ${formatRate(tax.rate)}</span><strong>${formatMoney(tax.value)}</strong></div>`).join("");
     const technicalRows = item.taxes.map((tax) => `
       <div>
         <span>${escapeHtml(tax.tax)} base</span><strong>${formatMoney(tax.base || 0)}</strong>
@@ -486,7 +693,7 @@
       </div>
     `).join("");
     const issuePills = item.issues.map((issue) => `<span class="pill warn">${escapeHtml(issue)}</span>`).join("");
-    item.searchText = [item.index, item.code, item.description, item.ncm, item.cfop, item.cest, item.icms && item.icms.cst, item.taxes.map((tax) => tax.tax).join(" ")].join(" ").toLowerCase();
+    item.searchText = [item.index, item.code, item.description, item.ncm, item.cfop, item.cest, item.icms && item.icms.cst, item.taxes.map((tax) => `${tax.tax} ${tax.cst} ${formatRate(tax.rate)}`).join(" ")].join(" ").toLowerCase();
     return `
       <details class="item-card" data-search="${escapeHtml(item.searchText)}" data-taxes="${escapeHtml(item.taxes.map((tax) => tax.tax).join(","))}" data-status="${item.issues.length ? "issues" : ""} ${item.icmsST.hasST ? "st" : ""} ${item.imports.length ? "import" : ""}">
         <summary class="item-summary">
@@ -495,7 +702,7 @@
             <div class="item-meta">
               <span class="pill info">NCM ${escapeHtml(item.ncm)}</span>
               <span class="pill info">CFOP ${escapeHtml(item.cfop)}</span>
-              <span class="pill ${item.icmsST.hasST ? "warn" : "ok"}">CST ${escapeHtml(item.icms ? item.icms.cst : "-")}</span>
+              <span class="pill ${item.icms && item.icms.missingCst ? "warn" : item.icmsST.hasST ? "warn" : "ok"}">CST ${escapeHtml(item.icms ? item.icms.cst : "-")}</span>
               ${issuePills}
             </div>
           </div>
@@ -618,7 +825,7 @@
     setStatus("Aguardando XML.");
     fields.validationBadge.className = "status-badge neutral";
     fields.validationBadge.textContent = "Sem XML";
-    fields.heroTitle.textContent = "Carregue uma NF-e ou NFC-e";
+    fields.heroTitle.textContent = "Carregue uma NF-e, NFC-e ou NFS-e";
     fields.heroSubtitle.textContent = "A analise fiscal aparecera aqui com alertas, totais, impostos e itens navegaveis.";
     ["heroVNF", "heroItems", "heroAlerts"].forEach((id) => (fields[id].textContent = id === "heroVNF" ? formatMoney(0) : "0"));
     ["nfNumber", "nfSeries", "nfModel", "nfDate", "nfNature", "nfKey"].forEach((id) => (fields[id].textContent = "-"));
@@ -642,7 +849,7 @@
     return [
       `RELATORIO DE ANALISE FISCAL`,
       ``,
-      `NF: ${invoice.number} | Serie: ${invoice.series} | Modelo: ${invoice.model}`,
+      `Documento: ${invoice.documentType === "nfse" ? "NFS-e" : "NF-e/NFC-e"} | Numero: ${invoice.number} | Serie: ${invoice.series} | Modelo: ${invoice.model}`,
       `Chave: ${invoice.key}`,
       `Emissao: ${formatDate(invoice.issuedAt)}`,
       `Natureza: ${invoice.nature}`,
@@ -660,7 +867,7 @@
       ...totalChecks.map((check) => `- ${check.label}: ${check.ok ? "OK" : "DIVERGENCIA"} | informado ${formatMoney(check.actual)} | calculado ${formatMoney(check.expected)} | dif ${formatMoney(check.diff)}`),
       ``,
       `Impostos:`,
-      ...taxSummary.map((tax) => `- ${tax.tax} CST ${tax.cst}: base ${formatMoney(tax.base)} | valor ${formatMoney(tax.value)} | itens ${tax.itemCount}`),
+      ...taxSummary.map((tax) => `- ${tax.tax} CST ${tax.cst}: aliquota ${tax.rateLabel} | base ${formatMoney(tax.base)} | valor ${formatMoney(tax.value)} | itens ${tax.itemCount}`),
       ``,
       `Alertas principais:`,
       ...validations.filter((issue) => issue.severity !== "info").slice(0, 20).map((issue) => `- [${issue.severity.toUpperCase()}] ${issue.title}: ${issue.detail}`),
@@ -674,6 +881,31 @@
 
   function metric(label, value, important) {
     return `<article class="metric ${important ? "important" : ""}"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></article>`;
+  }
+
+  function modelLabel(invoice) {
+    if (invoice.documentType === "nfse") return "NFS-e";
+    return `${invoice.model} (${invoice.model === "65" ? "NFC-e" : "NF-e"})`;
+  }
+
+  function taxCodeCell(tax) {
+    const label = tax.missingCst ? `${tax.cst} (alerta)` : tax.cst;
+    return `<span class="${tax.missingCst ? "tax-code-missing" : ""}">${escapeHtml(label)}</span>`;
+  }
+
+  function formatRate(rate) {
+    return Number.isFinite(rate) ? `${number.format(rate)}%` : "-";
+  }
+
+  function formatRateList(rates) {
+    const values = rates.filter((rate) => Number.isFinite(rate));
+    if (!values.length) return "-";
+    return values.map(formatRate).join(" / ");
+  }
+
+  function addUniqueRate(rates, rate) {
+    const normalized = Number(rate) || 0;
+    if (!rates.some((current) => Math.abs(current - normalized) < 0.0001)) rates.push(normalized);
   }
 
   function detail(label, value) {
@@ -698,7 +930,7 @@
   }
 
   function baseValidationNotice() {
-    return [{ severity: "info", title: "Validacao local", detail: "Esta analise nao substitui a validacao oficial por XSD e ambiente autorizador da SEFAZ." }];
+    return [{ severity: "info", title: "Validacao local", detail: "Esta analise nao substitui a validacao oficial por XSD, ambiente autorizador da SEFAZ ou prefeitura/provedor da NFS-e." }];
   }
 
   function addIssue(issues, severity, title, detail) {
@@ -730,6 +962,11 @@
     return node ? node.textContent.trim() : "";
   }
 
+  function firstText(root, localNames) {
+    const node = localNames.map((localName) => first(root, localName)).find(Boolean);
+    return node ? node.textContent.trim() : "";
+  }
+
   function textOf(root, localName) {
     const node = first(root, localName);
     return node ? node.textContent.trim() : "";
@@ -739,11 +976,32 @@
     return parseCurrency(textOf(root, localName));
   }
 
+  function firstValue(root, localNames) {
+    return parseCurrency(firstText(root, localNames));
+  }
+
+  function readTaxCode(root, localNames, fallback) {
+    const codeNode = localNames.map((localName) => child(root, localName)).find(Boolean) || localNames.map((localName) => first(root, localName)).find(Boolean);
+    const raw = codeNode ? (codeNode.textContent || "").trim() : "";
+    const fallbackValue = String(fallback || "").trim();
+    return {
+      raw,
+      value: raw || fallbackValue || "-",
+      source: raw ? codeNode.localName : fallbackValue ? "grupo" : codeNode ? "tag vazia" : "ausente",
+      missing: !raw,
+    };
+  }
+
   function parseCurrency(value) {
     if (!value) return 0;
     const normalized = String(value).trim().includes(",") ? String(value).trim().replace(/\./g, "").replace(",", ".") : String(value).trim();
     const parsed = Number(normalized);
     return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function normalizeRate(value) {
+    const rate = Number(value) || 0;
+    return rate > 0 && rate <= 1 ? round2(rate * 100) : rate;
   }
 
   function sum(items, key) {

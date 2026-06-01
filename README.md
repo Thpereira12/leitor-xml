@@ -1,6 +1,6 @@
 # Leitor de XML Fiscal
 
-Aplicacao estatica para analisar XML de NF-e direto no navegador.
+Aplicacao estatica para analisar XML de NF-e, NFC-e e NFS-e direto no navegador.
 
 ## Funcionalidades
 
@@ -12,13 +12,15 @@ Aplicacao estatica para analisar XML de NF-e direto no navegador.
 - Topico de validacoes SEFAZ/schema com alertas estruturais, chave de acesso, campos essenciais, itens e consistencia de totais.
 - Destaque de numero da NF, serie, natureza da operacao, emitente e destinatario.
 - Identificacao de despesas acessorias.
-- Somatoria de bases e valores por imposto e CST/CSOSN.
+- Somatoria de bases, aliquotas e valores por imposto e CST/CSOSN.
+- Alertas para CST/CSOSN ausente ou em branco nos grupos tributarios de NF-e.
+- Leitura basica de NFS-e com mapeamento de servico, ISS, retencoes e alertas de schema municipal.
 - Conferencia de importacao com DI e valores de II.
 - Listagem dos itens da nota.
 
 ## Uso
 
-Abra `index.html` no navegador e selecione ou cole o XML da NF-e.
+Abra `index.html` no navegador e selecione ou cole o XML da NF-e, NFC-e ou NFS-e.
 
 ## Formula de conferencia
 
