@@ -57,8 +57,8 @@
   const number = new Intl.NumberFormat("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
 
   const totalKeys = ["vProd", "vNF", "vBC", "vICMS", "vBCST", "vST", "vIPI", "vPIS", "vCOFINS", "vFrete", "vSeg", "vDesc", "vOutro", "vII", "vICMSDeson", "vFCPST", "vIPIDevol"];
-  const textTags = ["natOp", "xNome", "xFant", "xLgr", "xCpl", "xEnder", "xBairro", "xMun", "xPais", "xProd", "uCom", "uTrib", "esp", "infAdProd", "infCpl", "xContato", "email"];
-  const generalTextPattern = /^[A-Za-z0-9\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u00FF .,;:/()\-+'"_%@&\u00BA\u00AA]*$/;
+  const textTags = ["natOp", "xNome", "xFant", "xLgr", "xCpl", "xEnder", "xBairro", "xMun", "xPais", "xProd", "uCom", "uTrib", "esp", "infAdProd", "infCpl", "xContato", "email", "Discriminacao", "RazaoSocial", "NomeFantasia", "Endereco", "Bairro"];
+  const generalTextPattern = /^[A-Za-z0-9\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u00FF .,;:/()\-+'"_%@&$\u00BA\u00AA]*$/;
   const knownTaxCodes = {
     ICMS: ["00", "10", "20", "30", "40", "41", "50", "51", "60", "70", "90", "101", "102", "103", "201", "202", "203", "300", "400", "500", "900"],
     IPI: ["00", "01", "02", "03", "04", "05", "49", "50", "51", "52", "53", "54", "55", "99"],
@@ -137,7 +137,7 @@
 
   function detectDocumentType(doc) {
     if (first(doc, "NFe") && first(first(doc, "NFe"), "infNFe")) return "nfe";
-    if (first(doc, "Nfse") || first(doc, "CompNfse") || first(doc, "InfNfse") || first(doc, "ListaNfse") || first(doc, "DeclaracaoPrestacaoServico")) return "nfse";
+    if (["Nfse", "NFSe", "NfseProc", "CompNfse", "InfNfse", "infNFSe", "ListaNfse", "DeclaracaoPrestacaoServico", "InfDeclaracaoPrestacaoServico", "DPS", "infDPS"].some((tag) => first(doc, tag))) return "nfse";
     return "unknown";
   }
 
@@ -149,7 +149,7 @@
     const dest = child(infNFe, "dest");
     const icmsTot = first(infNFe, "ICMSTot");
     if (!nfe || !infNFe || !ide || !icmsTot) {
-      throw new Error("Nao encontrei uma estrutura NF-e/NFC-e/NFS-e valida. Confira se o XML contem NFe/infNFe/ICMSTot ou Nfse/InfNfse/Servico.");
+      throw new Error("Nao encontrei uma estrutura fiscal valida. Confira se o XML contem NFe/infNFe/ICMSTot ou NFS-e com Nfse/InfNfse/Servico/InfDeclaracaoPrestacaoServico.");
     }
 
     const totals = readTotals(icmsTot);
@@ -209,20 +209,21 @@
 
   function readNfseInvoice(doc, infNfse, servico) {
     const codigoVerificacao = firstText(doc, ["CodigoVerificacao", "CodigoVerificacaoNfse", "Protocolo"]);
-    const schemaVersion = infNfse.getAttribute("versao") || doc.documentElement.getAttribute("versao") || "-";
+    const rootId = doc.documentElement.getAttribute("Id") || infNfse.getAttribute("Id") || "";
+    const schemaVersion = infNfse.getAttribute("versao") || doc.documentElement.getAttribute("versao") || extractSchemaVersion(doc.documentElement.namespaceURI) || "-";
     return {
       documentType: "nfse",
       schemaVersion,
       number: firstText(doc, ["Numero", "NumeroNfse", "NumeroNota"]) || "-",
       series: firstText(doc, ["Serie", "SerieRps"]) || "-",
-      key: codigoVerificacao || firstText(doc, ["ChaveAcesso", "ChaveNFe", "Numero"]) || "-",
+      key: codigoVerificacao || rootId || firstText(doc, ["ChaveAcesso", "ChaveNFe", "Numero"]) || "-",
       model: "NFS-e",
       issuedAt: firstText(doc, ["DataEmissao", "DataEmissaoNfse", "Competencia"]) || "-",
       nature: firstText(servico, ["Discriminacao", "DescricaoServico", "CodigoTributacaoMunicipio", "ItemListaServico"]) || "Prestacao de servico",
       operationType: "Servico",
       purpose: "-",
-      protocol: codigoVerificacao || "-",
-      authorization: codigoVerificacao ? `Codigo de verificacao ${codigoVerificacao}` : "Sem codigo de verificacao no XML",
+      protocol: codigoVerificacao || rootId || "-",
+      authorization: codigoVerificacao ? `Codigo de verificacao ${codigoVerificacao}` : rootId ? `Declaracao identificada por ${rootId}` : "Sem codigo de verificacao no XML",
       statusCode: firstText(doc, ["CodigoStatus", "Status"]) || "-",
     };
   }
@@ -262,7 +263,7 @@
     }, {});
     const serviceValue = firstValue(doc, ["ValorServicos", "ValorServico", "ValorTotalServicos"]);
     const base = firstValue(doc, ["BaseCalculo", "BaseCalculoIss", "ValorBaseCalculo"]);
-    const discount = firstValue(doc, ["DescontoIncondicionado", "DescontoCondicionado"]);
+    const discount = sumValues(doc, ["DescontoIncondicionado", "DescontoCondicionado"]);
     const iss = firstValue(doc, ["ValorIss", "ValorISS", "ValorIssRetido"]);
     totals.vProd = serviceValue;
     totals.vNF = firstValue(doc, ["ValorLiquidoNfse", "ValorLiquido", "ValorTotal"]) || serviceValue;
@@ -271,7 +272,7 @@
     totals.vICMS = iss;
     totals.vPIS = firstValue(doc, ["ValorPis", "ValorPIS"]);
     totals.vCOFINS = firstValue(doc, ["ValorCofins", "ValorCOFINS"]);
-    totals.vOutro = firstValue(doc, ["OutrasRetencoes", "ValorInss", "ValorIr", "ValorCsll"]);
+    totals.vOutro = sumValues(doc, ["OutrasRetencoes", "ValorInss", "ValorIr", "ValorCsll"]);
     return totals;
   }
 
@@ -403,7 +404,18 @@
     const servico = first(doc, "Servico") || first(doc, "Valores") || doc.documentElement;
     const description = firstText(servico, ["Discriminacao", "DescricaoServico", "Descricao"]) || "Servico";
     const code = firstText(servico, ["ItemListaServico", "CodigoServico", "CodigoTributacaoMunicipio"]) || "-";
-    const issRate = normalizeRate(firstValue(servico, ["Aliquota", "AliquotaIss", "pISS"]));
+    const ibsCbs = first(doc, "IBSCBS");
+    const ibsCbsValues = first(ibsCbs, "valores") || ibsCbs;
+    const ibsCbsClass = first(ibsCbs, "gIBSCBS") || ibsCbs;
+    const issRate = normalizeRate(firstValue(servico, ["Aliquota", "AliquotaIss", "pISS"])) || inferRate(totals.vICMS, totals.vProd || totals.vBC);
+    const ibsCbsTax = createClassifiedServiceTax(
+      "IBS/CBS",
+      firstValue(ibsCbsValues, ["vBC"]),
+      normalizeRate(firstValue(ibsCbsValues, ["pRedutor"])),
+      firstValue(ibsCbsValues, ["vIBS", "vCBS", "vIBSCBS"]),
+      firstText(ibsCbsClass, ["CST"]) || "-",
+      firstText(ibsCbsClass, ["cClassTrib"]) || "-"
+    );
     const taxes = [
       createServiceTax("ISS", totals.vBC, issRate, totals.vICMS),
       createServiceTax("PIS", totals.vBC, normalizeRate(firstValue(servico, ["AliquotaPis", "AliquotaPIS"])), totals.vPIS),
@@ -411,7 +423,8 @@
       createServiceTax("INSS", totals.vBC, normalizeRate(firstValue(servico, ["AliquotaInss", "AliquotaINSS"])), firstValue(servico, ["ValorInss", "ValorINSS"])),
       createServiceTax("IR", totals.vBC, normalizeRate(firstValue(servico, ["AliquotaIr", "AliquotaIR"])), firstValue(servico, ["ValorIr", "ValorIR"])),
       createServiceTax("CSLL", totals.vBC, normalizeRate(firstValue(servico, ["AliquotaCsll", "AliquotaCSLL"])), firstValue(servico, ["ValorCsll", "ValorCSLL"])),
-    ].filter((tax) => tax.value || tax.rate || tax.tax === "ISS");
+      ibsCbsTax,
+    ].filter((tax) => tax.value || tax.rate || tax.tax === "ISS" || tax.cst !== "N/A");
 
     return [{
       index: "1",
@@ -429,7 +442,7 @@
       insurance: 0,
       other: 0,
       taxes,
-      icms: null,
+      icms: ibsCbsTax.cst !== "N/A" ? { cst: ibsCbsTax.cst, missingCst: false, origin: "-", base: ibsCbsTax.base, rate: ibsCbsTax.rate, value: ibsCbsTax.value } : null,
       icmsST: { hasST: false },
       ipi: null,
       pis: taxes.find((tax) => tax.tax === "PIS") || null,
@@ -448,6 +461,22 @@
       cst: "N/A",
       cstRaw: "N/A",
       cstSource: "nao aplicavel",
+      missingCst: false,
+      requiresCst: false,
+      base,
+      rate,
+      value,
+    };
+  }
+
+  function createClassifiedServiceTax(tax, base, rate, value, cst, classCode) {
+    const hasClassification = cst && cst !== "-";
+    return {
+      tax,
+      group: classCode && classCode !== "-" ? `NFS-e ${classCode}` : "NFS-e",
+      cst: hasClassification ? cst : "N/A",
+      cstRaw: hasClassification ? cst : "N/A",
+      cstSource: hasClassification ? "CST" : "nao aplicavel",
       missingCst: false,
       requiresCst: false,
       base,
@@ -523,9 +552,11 @@
 
   function buildNfseTotalChecks(totals) {
     const expected = round2(totals.vProd - totals.vDesc);
+    const expectedIss = round2(totals.vProd * inferRate(totals.vICMS, totals.vProd) / 100);
     return [
       compareTotal("Valor servicos", totals.vProd, totals.vBC || totals.vProd),
       { label: "Valor liquido NFS-e", expected, actual: totals.vNF, diff: round2(totals.vNF - expected), ok: !totals.vNF || Math.abs(totals.vNF - expected) <= 0.01 || totals.vOutro > 0 },
+      { label: "ISS calculado", expected: expectedIss, actual: totals.vICMS, diff: round2(totals.vICMS - expectedIss), ok: !totals.vICMS || Math.abs(totals.vICMS - expectedIss) <= 0.01 },
     ];
   }
 
@@ -544,7 +575,7 @@
         const digit = calculateAccessKeyDigit(invoice.key.slice(0, 43));
         if (digit !== Number(invoice.key.slice(-1))) addIssue(issues, "error", "Digito da chave nao confere", `Digito calculado ${digit}, informado ${invoice.key.slice(-1)}.`);
       }
-      if (!["55", "65"].includes(invoice.model)) addIssue(issues, "warn", "Modelo diferente de NF-e/NFC-e", `Modelo encontrado: ${invoice.model}.`);
+      if (!["55", "65"].includes(invoice.model)) addIssue(issues, "warn", "Modelo fiscal nao esperado", `Modelo encontrado: ${invoice.model}.`);
     }
     if (parties.issuer.document === "-") addIssue(issues, "error", "Documento do emitente ausente", "CNPJ/CPF do emitente nao encontrado.");
     if (parties.recipient.document === "-") addIssue(issues, "warn", "Documento do destinatario ausente", "CNPJ/CPF/idEstrangeiro do destinatario nao encontrado.");
@@ -560,6 +591,8 @@
     const root = doc.documentElement ? doc.documentElement.localName : "-";
     if (invoice.documentType === "nfse") {
       addIssue(issues, "info", "Schema NFS-e detectado", `Raiz ${root}; versao ${invoice.schemaVersion || "-"}. A NFS-e varia por municipio/provedor, entao os campos equivalentes sao mapeados por nomes conhecidos.`);
+      if (root === "InfDeclaracaoPrestacaoServico") addIssue(issues, "info", "Declaracao de prestacao de servico", "Layout de declaracao/RPS identificado. Pode nao conter numero final da NFS-e ou codigo de verificacao quando ainda nao estiver autorizado pelo provedor.");
+      if (/giss\.com\.br/i.test(doc.documentElement.namespaceURI || "")) addIssue(issues, "info", "Namespace GISS identificado", doc.documentElement.namespaceURI);
       return;
     }
     addIssue(issues, "info", "Schema NF-e detectado", `Raiz ${root}; versao ${invoice.schemaVersion || "-"}. A leitura local confere estrutura, chave, totais e grupos tributarios principais.`);
@@ -606,7 +639,7 @@
         seen.add(key);
         const encoding = unique(Array.from(value.matchAll(/(\u00C3.|\u00C2.|\u00E2.|\uFFFD)/g), (match) => match[0]));
         if (encoding.length) addIssue(issues, "warn", `Possivel codificacao corrompida em ${path}`, `Sequencias suspeitas: ${encoding.join(", ")}.`);
-        const badChars = unique(Array.from(value).filter((char) => !generalTextPattern.test(char)));
+        const badChars = unique(Array.from(value).filter((char) => !/[\r\n\t]/.test(char) && !generalTextPattern.test(char)));
         if (badChars.length) addIssue(issues, "warn", `Caracter fora do perfil em ${path}`, `Encontrado ${summarizeCharacters(badChars)} no valor "${truncate(value, 80)}".`);
         if (/^\s|\s$|\s{2,}|[\r\n\t]/.test(node.textContent || "")) addIssue(issues, "info", `Espacamento suspeito em ${path}`, `Confira espacos duplicados ou quebras no valor "${truncate(value.replace(/\s+/g, " "), 80)}".`);
       });
@@ -825,7 +858,7 @@
     setStatus("Aguardando XML.");
     fields.validationBadge.className = "status-badge neutral";
     fields.validationBadge.textContent = "Sem XML";
-    fields.heroTitle.textContent = "Carregue uma NF-e, NFC-e ou NFS-e";
+    fields.heroTitle.textContent = "Carregue uma NF-e ou NFS-e";
     fields.heroSubtitle.textContent = "A analise fiscal aparecera aqui com alertas, totais, impostos e itens navegaveis.";
     ["heroVNF", "heroItems", "heroAlerts"].forEach((id) => (fields[id].textContent = id === "heroVNF" ? formatMoney(0) : "0"));
     ["nfNumber", "nfSeries", "nfModel", "nfDate", "nfNature", "nfKey"].forEach((id) => (fields[id].textContent = "-"));
@@ -849,7 +882,7 @@
     return [
       `RELATORIO DE ANALISE FISCAL`,
       ``,
-      `Documento: ${invoice.documentType === "nfse" ? "NFS-e" : "NF-e/NFC-e"} | Numero: ${invoice.number} | Serie: ${invoice.series} | Modelo: ${invoice.model}`,
+      `Documento: ${invoice.documentType === "nfse" ? "NFS-e" : "NF-e"} | Numero: ${invoice.number} | Serie: ${invoice.series} | Modelo: ${invoice.model}`,
       `Chave: ${invoice.key}`,
       `Emissao: ${formatDate(invoice.issuedAt)}`,
       `Natureza: ${invoice.nature}`,
@@ -885,7 +918,7 @@
 
   function modelLabel(invoice) {
     if (invoice.documentType === "nfse") return "NFS-e";
-    return `${invoice.model} (${invoice.model === "65" ? "NFC-e" : "NF-e"})`;
+    return invoice.model === "55" ? "55 (NF-e)" : invoice.model;
   }
 
   function taxCodeCell(tax) {
@@ -980,6 +1013,10 @@
     return parseCurrency(firstText(root, localNames));
   }
 
+  function sumValues(root, localNames) {
+    return round2(localNames.reduce((total, localName) => total + parseCurrency(firstText(root, [localName])), 0));
+  }
+
   function readTaxCode(root, localNames, fallback) {
     const codeNode = localNames.map((localName) => child(root, localName)).find(Boolean) || localNames.map((localName) => first(root, localName)).find(Boolean);
     const raw = codeNode ? (codeNode.textContent || "").trim() : "";
@@ -1002,6 +1039,15 @@
   function normalizeRate(value) {
     const rate = Number(value) || 0;
     return rate > 0 && rate <= 1 ? round2(rate * 100) : rate;
+  }
+
+  function inferRate(value, base) {
+    return value > 0 && base > 0 ? round2((value / base) * 100) : 0;
+  }
+
+  function extractSchemaVersion(namespaceUri) {
+    const match = String(namespaceUri || "").match(/v(\d+)_(\d+)/i);
+    return match ? `${Number(match[1])}.${match[2]}` : "";
   }
 
   function sum(items, key) {

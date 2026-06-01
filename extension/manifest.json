@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Leitor XML Fiscal",
-  "description": "Atalho para colar um XML de NF-e, NFC-e ou NFS-e e abrir a analise no Leitor XML.",
-  "version": "1.0.3",
+  "description": "Atalho para colar um XML de NF-e ou NFS-e e abrir a analise no Leitor XML.",
+  "version": "1.0.4",
   "action": {
     "default_popup": "popup.html",
     "default_title": "Leitor XML Fiscal",

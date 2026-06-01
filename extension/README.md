@@ -5,7 +5,7 @@ Esta extensao e apenas um atalho para o site principal do Leitor XML.
 ## Como usar
 
 1. Clique no icone da extensao.
-2. Cole o XML da NF-e, NFC-e ou NFS-e no campo do popup.
+2. Cole o XML da NF-e ou NFS-e no campo do popup.
 3. Clique em `Analisar no Leitor XML`.
 4. A extensao abre o site oficial e envia o XML para analise automaticamente.
 

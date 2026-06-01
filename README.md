@@ -1,6 +1,6 @@
 # Leitor de XML Fiscal
 
-Aplicacao estatica para analisar XML de NF-e, NFC-e e NFS-e direto no navegador.
+Aplicacao estatica para analisar XML de NF-e e NFS-e direto no navegador.
 
 ## Funcionalidades
 
@@ -20,7 +20,7 @@ Aplicacao estatica para analisar XML de NF-e, NFC-e e NFS-e direto no navegador.
 
 ## Uso
 
-Abra `index.html` no navegador e selecione ou cole o XML da NF-e, NFC-e ou NFS-e.
+Abra `index.html` no navegador e selecione ou cole o XML da NF-e ou NFS-e.
 
 ## Formula de conferencia
 
