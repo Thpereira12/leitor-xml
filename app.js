@@ -78,6 +78,17 @@
     9: "COFINS Nao Retido, PIS/CSLL Retidos",
   };
   const nfsePisCofinsRetentionWithValue = new Set(["1", "3", "4", "5", "6", "7", "8", "9"]);
+  const spCBenefVersion = "20260626";
+  const spCBenefDeactivatedCodeDate = new Date("2026-07-01T00:00:00-03:00");
+  const cBenefRequiredByCst = {
+    20: "reducao da base de calculo",
+    30: "isencao ou nao tributacao com substituicao tributaria",
+    40: "isencao",
+    41: "nao incidencia",
+    50: "suspensao",
+    51: "diferimento",
+    70: "reducao da base de calculo com substituicao tributaria",
+  };
 
   let currentAnalysis = null;
   fields.xmlFile.addEventListener("change", async (event) => {
@@ -248,6 +259,7 @@
       ie: childText(node, "IE") || "-",
       crt: childText(node, "CRT") || "-",
       ieIndicator: childText(node, "indIEDest") || "-",
+      uf: firstText(node, ["UF"]) || "-",
     };
   }
 
@@ -259,6 +271,7 @@
       ie: firstText(node, ["InscricaoMunicipal", "InscricaoEstadual", "IE"]) || "-",
       crt: "-",
       ieIndicator: "-",
+      uf: firstText(node, ["Uf", "UF"]) || "-",
     };
   }
 
@@ -318,6 +331,7 @@
       description: textOf(prod, "xProd") || "Produto sem descricao",
       ncm: textOf(prod, "NCM") || "-",
       cest: textOf(prod, "CEST") || "-",
+      cBenef: normalizeCBenef(textOf(prod, "cBenef")),
       cfop: textOf(prod, "CFOP") || "-",
       quantity: qCom,
       unit: textOf(prod, "uCom") || "-",
@@ -590,11 +604,13 @@
         if (digit !== Number(invoice.key.slice(-1))) addIssue(issues, "error", "Digito da chave nao confere", `Digito calculado ${digit}, informado ${invoice.key.slice(-1)}.`);
       }
       if (!["55", "65"].includes(invoice.model)) addIssue(issues, "warn", "Modelo fiscal nao esperado", `Modelo encontrado: ${invoice.model}.`);
+      validateCBenef(issues, doc, invoice, parties, items);
     }
     if (parties.issuer.document === "-") addIssue(issues, "error", "Documento do emitente ausente", "CNPJ/CPF do emitente nao encontrado.");
     if (parties.recipient.document === "-") addIssue(issues, "warn", "Documento do destinatario ausente", "CNPJ/CPF/idEstrangeiro do destinatario nao encontrado.");
     totalChecks.filter((check) => !check.ok).forEach((check) => addIssue(issues, "warn", `Divergencia em ${check.label}`, `Informado ${formatMoney(check.actual)}; calculado ${formatMoney(check.expected)}; diferenca ${formatMoney(check.diff)}.`));
     validateTaxClassifications(issues, items);
+    validateProductFiscalFields(issues, invoice, items);
     items.forEach((item) => item.issues.forEach((issue) => addIssue(issues, "warn", `Item ${item.index}: ${issue}`, item.description)));
     validateTextFields(issues, doc);
     if (rawXml.includes("<nfeProc") && invoice.protocol === "-") addIssue(issues, "warn", "Protocolo nao identificado", "O XML parece autorizado, mas nao encontrei nProt.");
@@ -611,6 +627,93 @@
     }
     addIssue(issues, "info", "Schema NF-e detectado", `Raiz ${root}; versao ${invoice.schemaVersion || "-"}. A leitura local confere estrutura, chave, totais e grupos tributarios principais.`);
     if (!invoice.schemaVersion || invoice.schemaVersion === "-") addIssue(issues, "warn", "Versao do schema ausente", "Nao encontrei o atributo versao em infNFe/NFe.");
+  }
+
+  function validateCBenef(issues, doc, invoice, parties, items) {
+    const issuerUf = getIssuerUf(doc, parties, invoice);
+    const isSaoPaulo = issuerUf === "SP";
+    const hasAnyBenefit = items.some((item) => item.cBenef && item.cBenef !== "-");
+
+    if (isSaoPaulo || hasAnyBenefit) {
+      addIssue(issues, "info", "Tabela cBenef SP", `Validacao local baseada na tabela SEFAZ-SP CST x cBenef versao ${spCBenefVersion}.`);
+    }
+
+    items.forEach((item) => {
+      const icms = item.icms;
+      if (!icms) return;
+      const cst = String(icms.cst || "").trim();
+      const cBenef = normalizeCBenef(item.cBenef);
+      const requiresBenefit = Boolean(cBenefRequiredByCst[cst]);
+      const benefitIndicators = Boolean(icms.deson || icms.reduction || (icms.st && icms.st.reduction));
+      const requiresAttention = requiresBenefit || (["90", "900"].includes(cst) && benefitIndicators);
+
+      if (isSaoPaulo && requiresAttention && !cBenef) {
+        const reason = cBenefRequiredByCst[cst] || "CST com valores de reducao, desoneracao ou outro beneficio fiscal";
+        addIssue(issues, "warn", `Item ${item.index}: cBenef ausente`, `CST ${cst} indica ${reason}. Para emitente de SP, confira o preenchimento do codigo de beneficio fiscal no item ${item.description}.`);
+      }
+
+      if (!cBenef) return;
+
+      if (cst === "00") {
+        addIssue(issues, "warn", `Item ${item.index}: cBenef em CST 00`, "A SEFAZ-SP orienta que cBenef nao seja utilizado em saidas tributadas CST 00 para credito outorgado; confira a regra de escrituracao aplicavel.");
+      }
+
+      if (normalizeCBenef(cBenef) === "SEM CBENEF" && new Date() >= spCBenefDeactivatedCodeDate) {
+        addIssue(issues, "error", `Item ${item.index}: SEM CBENEF desativado`, "A SEFAZ-SP indicou desativacao do codigo SEM CBENEF a partir de 01/07/2026.");
+      }
+
+      if (isSaoPaulo && normalizeCBenef(cBenef) !== "SEM CBENEF" && !isValidSpCBenef(cBenef)) {
+        addIssue(issues, "warn", `Item ${item.index}: cBenef fora do padrao SP`, `Codigo informado: ${cBenef}. Para SP, o padrao esperado e SP seguido de 6 digitos, ou codigo especial vigente na tabela.`);
+      }
+    });
+  }
+
+  function getIssuerUf(doc, parties, invoice) {
+    const partyUf = parties && parties.issuer && parties.issuer.uf && parties.issuer.uf !== "-" ? parties.issuer.uf : "";
+    if (partyUf) return partyUf;
+    if (invoice.key && /^\d{44}$/.test(invoice.key) && invoice.key.slice(0, 2) === "35") return "SP";
+    const emit = first(doc, "emit");
+    return firstText(emit, ["UF"]) || "";
+  }
+
+  function normalizeCBenef(value) {
+    const normalized = String(value || "").trim().toUpperCase();
+    return normalized === "-" ? "" : normalized;
+  }
+
+  function isValidSpCBenef(value) {
+    const code = normalizeCBenef(value);
+    if (!code) return true;
+    if (code === "SEM CBENEF") return new Date() < spCBenefDeactivatedCodeDate;
+    return /^SP\d{6}$/.test(code);
+  }
+
+  function validateProductFiscalFields(issues, invoice, items) {
+    items.forEach((item) => {
+      if (item.ncm && item.ncm !== "-" && !/^\d{8}$/.test(item.ncm)) {
+        addIssue(issues, "warn", `Item ${item.index}: NCM invalido`, `NCM ${item.ncm} deve possuir 8 digitos numericos.`);
+      }
+      if (item.cfop && item.cfop !== "-" && !/^\d{4}$/.test(item.cfop)) {
+        addIssue(issues, "warn", `Item ${item.index}: CFOP invalido`, `CFOP ${item.cfop} deve possuir 4 digitos numericos.`);
+      }
+      if (/^\d{4}$/.test(item.cfop || "")) {
+        const firstDigit = item.cfop.charAt(0);
+        if (invoice.operationType === "Entrada" && !["1", "2", "3"].includes(firstDigit)) {
+          addIssue(issues, "warn", `Item ${item.index}: CFOP incompativel com entrada`, `Operacao marcada como entrada, mas CFOP ${item.cfop} nao inicia por 1, 2 ou 3.`);
+        }
+        if (invoice.operationType === "Saida" && !["5", "6", "7"].includes(firstDigit)) {
+          addIssue(issues, "warn", `Item ${item.index}: CFOP incompativel com saida`, `Operacao marcada como saida, mas CFOP ${item.cfop} nao inicia por 5, 6 ou 7.`);
+        }
+      }
+      if (requiresCest(item) && (!item.cest || item.cest === "-")) {
+        addIssue(issues, "warn", `Item ${item.index}: CEST ausente`, "O item possui ICMS ST ou CST/CSOSN usualmente associado a ST. Confira a obrigatoriedade de CEST para o NCM/produto.");
+      }
+    });
+  }
+
+  function requiresCest(item) {
+    const cst = item.icms ? String(item.icms.cst || "") : "";
+    return Boolean(item.icmsST.hasST || ["10", "30", "60", "70", "201", "202", "203", "500"].includes(cst));
   }
 
   function validateNfsePisCofins(issues, doc) {
@@ -799,7 +902,8 @@
       </div>
     `).join("");
     const issuePills = item.issues.map((issue) => `<span class="pill warn">${escapeHtml(issue)}</span>`).join("");
-    item.searchText = [item.index, item.code, item.description, item.ncm, item.cfop, item.cest, item.icms && item.icms.cst, item.taxes.map((tax) => `${tax.tax} ${tax.cst} ${formatRate(tax.rate)}`).join(" ")].join(" ").toLowerCase();
+    item.searchText = [item.index, item.code, item.description, item.ncm, item.cfop, item.cest, item.cBenef, item.icms && item.icms.cst, item.taxes.map((tax) => `${tax.tax} ${tax.cst} ${formatRate(tax.rate)}`).join(" ")].join(" ").toLowerCase();
+    const cBenefPill = item.cBenef ? `<span class="pill info">cBenef ${escapeHtml(item.cBenef)}</span>` : "";
     return `
       <details class="item-card" data-search="${escapeHtml(item.searchText)}" data-taxes="${escapeHtml(item.taxes.map((tax) => tax.tax).join(","))}" data-status="${item.issues.length ? "issues" : ""} ${item.icmsST.hasST ? "st" : ""} ${item.imports.length ? "import" : ""}">
         <summary class="item-summary">
@@ -809,6 +913,7 @@
               <span class="pill info">NCM ${escapeHtml(item.ncm)}</span>
               <span class="pill info">CFOP ${escapeHtml(item.cfop)}</span>
               <span class="pill ${item.icms && item.icms.missingCst ? "warn" : item.icmsST.hasST ? "warn" : "ok"}">CST ${escapeHtml(item.icms ? item.icms.cst : "-")}</span>
+              ${cBenefPill}
               ${issuePills}
             </div>
           </div>
@@ -828,6 +933,7 @@
             <span class="pill info">cProd=${escapeHtml(item.code)}</span>
             <span class="pill info">NCM=${escapeHtml(item.ncm)}</span>
             <span class="pill info">CEST=${escapeHtml(item.cest)}</span>
+            <span class="pill info">cBenef=${escapeHtml(item.cBenef || "-")}</span>
             <span class="pill info">CFOP=${escapeHtml(item.cfop)}</span>
             <span class="pill info">orig=${escapeHtml(item.icms ? item.icms.origin : "-")}</span>
             <span class="pill info">CST/CSOSN=${escapeHtml(item.icms ? item.icms.cst : "-")}</span>
