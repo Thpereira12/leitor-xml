@@ -57,6 +57,15 @@
   const number = new Intl.NumberFormat("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
 
   const totalKeys = ["vProd", "vNF", "vBC", "vICMS", "vBCST", "vST", "vIPI", "vPIS", "vCOFINS", "vFrete", "vSeg", "vDesc", "vOutro", "vII", "vICMSDeson", "vFCPST", "vIPIDevol"];
+  const icmsSTBaseModes = {
+    0: "Preco tabelado ou maximo sugerido",
+    1: "Lista negativa",
+    2: "Lista positiva",
+    3: "Lista neutra",
+    4: "Margem de Valor Agregado",
+    5: "Pauta",
+    6: "Valor da operacao",
+  };
   const textTags = ["natOp", "xNome", "xFant", "xLgr", "xCpl", "xEnder", "xBairro", "xMun", "xPais", "xProd", "uCom", "uTrib", "esp", "infAdProd", "infCpl", "xContato", "email", "Discriminacao", "RazaoSocial", "NomeFantasia", "Endereco", "Bairro"];
   const generalTextPattern = /^[A-Za-z0-9\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u00FF .,;:/()\-+'"_%@&$\u00BA\u00AA]*$/;
   const knownTaxCodes = {
@@ -316,6 +325,10 @@
     const vProd = valueOf(prod, "vProd");
     const qCom = valueOf(prod, "qCom");
     const vUnCom = valueOf(prod, "vUnCom");
+    const discount = valueOf(prod, "vDesc");
+    const freight = valueOf(prod, "vFrete");
+    const insurance = valueOf(prod, "vSeg");
+    const other = valueOf(prod, "vOutro");
     const expectedProduct = round2(qCom * vUnCom);
     const issues = [];
     if (Math.abs(expectedProduct - vProd) > 0.01) {
@@ -324,6 +337,18 @@
     if (!icms) issues.push("ICMS nao identificado");
     if (!textOf(prod, "NCM")) issues.push("NCM ausente");
     if (!textOf(prod, "CFOP")) issues.push("CFOP ausente");
+    const icmsST = buildIcmsST(icms, {
+      product: vProd,
+      discount,
+      freight,
+      insurance,
+      other,
+      ipi: ipi ? ipi.value : 0,
+      ii: ii ? ii.value : 0,
+    });
+    if (icmsST.hasST && icmsST.mvaStatus === "unavailable") {
+      issues.push("MVA nao pode ser inferida: faltam dados para recompor a base da operacao");
+    }
 
     return {
       index: itemNumber,
@@ -337,13 +362,13 @@
       unit: textOf(prod, "uCom") || "-",
       unitValue: vUnCom,
       total: vProd,
-      discount: valueOf(prod, "vDesc"),
-      freight: valueOf(prod, "vFrete"),
-      insurance: valueOf(prod, "vSeg"),
-      other: valueOf(prod, "vOutro"),
+      discount,
+      freight,
+      insurance,
+      other,
       taxes,
       icms,
-      icmsST: buildIcmsST(icms, vProd),
+      icmsST,
       ipi,
       pis,
       cofins,
@@ -360,6 +385,7 @@
     const group = Array.from(wrapper.children).find((node) => node.localName && node.localName.startsWith("ICMS"));
     if (!group) return null;
     const code = readTaxCode(group, ["CST", "CSOSN"], group.localName.replace("ICMS", ""));
+    const mvaRaw = textOf(group, "pMVAST");
     return {
       tax: "ICMS",
       group: group.localName,
@@ -377,10 +403,12 @@
       difal: valueOf(group, "vICMSUFDest"),
       fcp: valueOf(group, "vFCP"),
       st: {
+        mode: textOf(group, "modBCST"),
         base: valueOf(group, "vBCST"),
         rate: valueOf(group, "pICMSST"),
         value: valueOf(group, "vICMSST"),
-        mva: valueOf(group, "pMVAST"),
+        mva: parseCurrency(mvaRaw),
+        hasMva: mvaRaw !== "",
         reduction: valueOf(group, "pRedBCST"),
         fcpBase: valueOf(group, "vBCFCPST"),
         fcpRate: valueOf(group, "pFCPST"),
@@ -534,18 +562,74 @@
     });
   }
 
-  function buildIcmsST(icms, itemValue) {
+  function buildIcmsST(icms, itemValues) {
     if (!icms || (!icms.st.base && !icms.st.value && !icms.st.fcpValue)) {
       return { hasST: false };
     }
-    const informedMva = icms.st.mva;
-    const estimatedMva = itemValue > 0 && icms.st.base > 0 ? round2(((icms.st.base / itemValue) - 1) * 100) : 0;
+
+    const mode = String(icms.st.mode || "");
+    const modeLabel = icmsSTBaseModes[mode] || "Modalidade nao informada";
+    const operationBase = round2(Math.max(0,
+      itemValues.product
+      - itemValues.discount
+      + itemValues.freight
+      + itemValues.insurance
+      + itemValues.other
+      + itemValues.ipi
+      + itemValues.ii
+    ));
+    const reduction = icms.st.reduction || 0;
+    const hasValidReduction = reduction >= 0 && reduction < 100;
+    const reductionFactor = hasValidReduction ? 1 - (reduction / 100) : 0;
+    const rawBaseBeforeReduction = reductionFactor > 0 ? icms.st.base / reductionFactor : 0;
+    const baseBeforeReduction = round4(rawBaseBeforeReduction);
+    const isMvaMode = mode === "4";
+    const hasInformedMva = Boolean(icms.st.hasMva);
+    const componentsMemory = `Base da operacao = vProd ${formatMoney(itemValues.product)} - vDesc ${formatMoney(itemValues.discount)} + vFrete ${formatMoney(itemValues.freight)} + vSeg ${formatMoney(itemValues.insurance)} + vOutro ${formatMoney(itemValues.other)} + vIPI ${formatMoney(itemValues.ipi)} + vII ${formatMoney(itemValues.ii)} = ${formatMoney(operationBase)}.`;
+    let mvaUsed = null;
+    let mvaStatus = "not-applicable";
+    let memory = `modBCST ${mode || "ausente"} - ${modeLabel}. A base de ICMS ST nao foi determinada por MVA.`;
+    let expectedBase = null;
+    let baseDifference = null;
+
+    if (hasInformedMva) {
+      mvaUsed = round4(icms.st.mva);
+      mvaStatus = "informed";
+      if (operationBase > 0 && hasValidReduction) {
+        expectedBase = round2(operationBase * (1 + (mvaUsed / 100)) * reductionFactor);
+        baseDifference = round2(icms.st.base - expectedBase);
+        memory = `${componentsMemory} vBCST esperado = ${formatMoney(operationBase)} x (1 + ${number.format(mvaUsed)}%) x (1 - ${number.format(reduction)}%) = ${formatMoney(expectedBase)}; diferenca para o XML: ${formatMoney(baseDifference)}.`;
+      } else {
+        memory = `pMVAST informado no XML: ${number.format(mvaUsed)}%. Base insuficiente para reconstruir o vBCST.`;
+      }
+      if (!isMvaMode) {
+        memory += ` Atencao: modBCST ${mode || "ausente"} nao indica Margem de Valor Agregado.`;
+      }
+    } else if (isMvaMode && operationBase > 0 && icms.st.base > 0 && hasValidReduction) {
+      mvaUsed = round4(((rawBaseBeforeReduction / operationBase) - 1) * 100);
+      mvaStatus = "inferred";
+      const reductionMemory = reduction > 0
+        ? `Base antes da reducao = vBCST ${formatMoney(icms.st.base)} / (1 - ${number.format(reduction)}%) = ${formatMoney(baseBeforeReduction)}. `
+        : "";
+      memory = `${componentsMemory} ${reductionMemory}MVA = (base antes da reducao ${formatMoney(baseBeforeReduction)} / base da operacao ${formatMoney(operationBase)} - 1) x 100 = ${number.format(mvaUsed)}%.`;
+    } else if (isMvaMode || !mode) {
+      mvaStatus = "unavailable";
+      memory = `${componentsMemory} Nao ha dados suficientes para inferir a MVA com seguranca.`;
+    }
+
     return {
       hasST: true,
       ...icms.st,
-      mvaUsed: informedMva || estimatedMva,
-      inferred: !informedMva && Boolean(estimatedMva),
-      memory: itemValue > 0 && icms.st.base > 0 ? `((vBCST ${formatMoney(icms.st.base)} / vProd ${formatMoney(itemValue)}) - 1) x 100 = ${number.format(estimatedMva)}%` : "Base insuficiente para estimar MVA.",
+      mode,
+      modeLabel,
+      operationBase,
+      baseBeforeReduction,
+      mvaUsed,
+      mvaStatus,
+      inferred: mvaStatus === "inferred",
+      expectedBase,
+      baseDifference,
+      memory,
     };
   }
 
@@ -938,7 +1022,7 @@
             <span class="pill info">orig=${escapeHtml(item.icms ? item.icms.origin : "-")}</span>
             <span class="pill info">CST/CSOSN=${escapeHtml(item.icms ? item.icms.cst : "-")}</span>
           </div>
-          ${item.icmsST.hasST ? `<p class="technical-only"><strong>ICMS ST:</strong> vBCST ${formatMoney(item.icmsST.base)}, pICMSST ${number.format(item.icmsST.rate)}%, vICMSST ${formatMoney(item.icmsST.value)}. MVA ${item.icmsST.inferred ? "inferida" : "informada"}: ${number.format(item.icmsST.mvaUsed)}%. ${escapeHtml(item.icmsST.memory)}</p>` : ""}
+          ${item.icmsST.hasST ? `<p class="technical-only"><strong>ICMS ST:</strong> vBCST ${formatMoney(item.icmsST.base)}, pICMSST ${number.format(item.icmsST.rate)}%, vICMSST ${formatMoney(item.icmsST.value)}. Modalidade ${escapeHtml(item.icmsST.mode || "-")} - ${escapeHtml(item.icmsST.modeLabel)}. <strong>${escapeHtml(formatMvaSummary(item.icmsST))}</strong> ${escapeHtml(item.icmsST.memory)}</p>` : ""}
         </div>
       </details>
     `;
@@ -954,16 +1038,25 @@
         </summary>
         <div class="item-body">
           <div class="mini-grid">
+            <div><span>modBCST</span><strong>${escapeHtml(item.icmsST.mode || "-")}</strong></div>
             <div><span>vBCST</span><strong>${formatMoney(item.icmsST.base)}</strong></div>
             <div><span>pICMSST</span><strong>${number.format(item.icmsST.rate)}%</strong></div>
             <div><span>vICMSST</span><strong>${formatMoney(item.icmsST.value)}</strong></div>
             <div><span>pRedBCST</span><strong>${number.format(item.icmsST.reduction)}%</strong></div>
             <div><span>FCP-ST</span><strong>${formatMoney(item.icmsST.fcpValue)}</strong></div>
           </div>
-          <p><strong>MVA ${item.icmsST.inferred ? "estimada" : "informada"}:</strong> ${number.format(item.icmsST.mvaUsed)}%. ${escapeHtml(item.icmsST.memory)}</p>
+          <p><strong>Modalidade da base:</strong> ${escapeHtml(item.icmsST.modeLabel)}.</p>
+          <p><strong>${escapeHtml(formatMvaSummary(item.icmsST))}</strong> ${escapeHtml(item.icmsST.memory)}</p>
         </div>
       </details>
     `).join("") || emptyState("Nenhum item com ICMS ST encontrado.");
+  }
+
+  function formatMvaSummary(icmsST) {
+    if (icmsST.mvaStatus === "informed") return `MVA informada: ${number.format(icmsST.mvaUsed)}%.`;
+    if (icmsST.mvaStatus === "inferred") return `MVA estimada: ${number.format(icmsST.mvaUsed)}%.`;
+    if (icmsST.mvaStatus === "unavailable") return "MVA: nao calculada.";
+    return "MVA: nao aplicavel.";
   }
 
   function renderImports(analysis) {
@@ -1239,6 +1332,10 @@
 
   function round2(value) {
     return Math.round((value + Number.EPSILON) * 100) / 100;
+  }
+
+  function round4(value) {
+    return Math.round((value + Number.EPSILON) * 10000) / 10000;
   }
 
   function unique(values, mapper) {
