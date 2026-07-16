@@ -338,13 +338,12 @@
     if (!textOf(prod, "NCM")) issues.push("NCM ausente");
     if (!textOf(prod, "CFOP")) issues.push("CFOP ausente");
     const icmsST = buildIcmsST(icms, {
-      product: vProd,
-      discount,
-      freight,
-      insurance,
-      other,
-      ipi: ipi ? ipi.value : 0,
-      ii: ii ? ii.value : 0,
+      product: textOf(prod, "vProd") || "0",
+      discount: textOf(prod, "vDesc") || "0",
+      freight: textOf(prod, "vFrete") || "0",
+      insurance: textOf(prod, "vSeg") || "0",
+      other: textOf(prod, "vOutro") || "0",
+      ipi: ipi ? ipi.valueRaw : "0",
     });
     if (icmsST.hasST && icmsST.mvaStatus === "unavailable") {
       issues.push("MVA nao pode ser inferida: faltam dados para recompor a base da operacao");
@@ -361,6 +360,7 @@
       quantity: qCom,
       unit: textOf(prod, "uCom") || "-",
       unitValue: vUnCom,
+      indTot: textOf(prod, "indTot") || "-",
       total: vProd,
       discount,
       freight,
@@ -386,6 +386,7 @@
     if (!group) return null;
     const code = readTaxCode(group, ["CST", "CSOSN"], group.localName.replace("ICMS", ""));
     const mvaRaw = textOf(group, "pMVAST");
+    const ownValueRaw = textOf(group, "vICMS");
     return {
       tax: "ICMS",
       group: group.localName,
@@ -396,8 +397,12 @@
       requiresCst: true,
       origin: textOf(group, "orig") || "-",
       base: valueOf(group, "vBC"),
+      baseRaw: textOf(group, "vBC") || "0",
       rate: valueOf(group, "pICMS"),
+      rateRaw: textOf(group, "pICMS") || "0",
       value: valueOf(group, "vICMS"),
+      valueRaw: ownValueRaw || "0",
+      hasValue: ownValueRaw !== "",
       reduction: valueOf(group, "pRedBC"),
       deson: valueOf(group, "vICMSDeson"),
       difal: valueOf(group, "vICMSUFDest"),
@@ -405,11 +410,16 @@
       st: {
         mode: textOf(group, "modBCST"),
         base: valueOf(group, "vBCST"),
+        baseRaw: textOf(group, "vBCST") || "0",
         rate: valueOf(group, "pICMSST"),
+        rateRaw: textOf(group, "pICMSST") || "0",
         value: valueOf(group, "vICMSST"),
+        valueRaw: textOf(group, "vICMSST") || "0",
+        mvaRaw: mvaRaw || "0",
         mva: parseCurrency(mvaRaw),
         hasMva: mvaRaw !== "",
         reduction: valueOf(group, "pRedBCST"),
+        reductionRaw: textOf(group, "pRedBCST") || "0",
         fcpBase: valueOf(group, "vBCFCPST"),
         fcpRate: valueOf(group, "pFCPST"),
         fcpValue: valueOf(group, "vFCPST"),
@@ -431,8 +441,11 @@
       missingCst: code.missing,
       requiresCst: true,
       base: valueOf(group, "vBC"),
+      baseRaw: textOf(group, "vBC") || "0",
       rate: valueOf(group, rateName),
+      rateRaw: textOf(group, rateName) || "0",
       value: valueOf(group, valueName),
+      valueRaw: textOf(group, valueName) || "0",
     };
   }
 
@@ -566,70 +579,35 @@
     if (!icms || (!icms.st.base && !icms.st.value && !icms.st.fcpValue)) {
       return { hasST: false };
     }
-
     const mode = String(icms.st.mode || "");
-    const modeLabel = icmsSTBaseModes[mode] || "Modalidade nao informada";
-    const operationBase = round2(Math.max(0,
-      itemValues.product
-      - itemValues.discount
-      + itemValues.freight
-      + itemValues.insurance
-      + itemValues.other
-      + itemValues.ipi
-      + itemValues.ii
-    ));
-    const reduction = icms.st.reduction || 0;
-    const hasValidReduction = reduction >= 0 && reduction < 100;
-    const reductionFactor = hasValidReduction ? 1 - (reduction / 100) : 0;
-    const rawBaseBeforeReduction = reductionFactor > 0 ? icms.st.base / reductionFactor : 0;
-    const baseBeforeReduction = round4(rawBaseBeforeReduction);
-    const isMvaMode = mode === "4";
-    const hasInformedMva = Boolean(icms.st.hasMva);
-    const componentsMemory = `Base da operacao = vProd ${formatMoney(itemValues.product)} - vDesc ${formatMoney(itemValues.discount)} + vFrete ${formatMoney(itemValues.freight)} + vSeg ${formatMoney(itemValues.insurance)} + vOutro ${formatMoney(itemValues.other)} + vIPI ${formatMoney(itemValues.ipi)} + vII ${formatMoney(itemValues.ii)} = ${formatMoney(operationBase)}.`;
-    let mvaUsed = null;
-    let mvaStatus = "not-applicable";
-    let memory = `modBCST ${mode || "ausente"} - ${modeLabel}. A base de ICMS ST nao foi determinada por MVA.`;
-    let expectedBase = null;
-    let baseDifference = null;
-
-    if (hasInformedMva) {
-      mvaUsed = round4(icms.st.mva);
-      mvaStatus = "informed";
-      if (operationBase > 0 && hasValidReduction) {
-        expectedBase = round2(operationBase * (1 + (mvaUsed / 100)) * reductionFactor);
-        baseDifference = round2(icms.st.base - expectedBase);
-        memory = `${componentsMemory} vBCST esperado = ${formatMoney(operationBase)} x (1 + ${number.format(mvaUsed)}%) x (1 - ${number.format(reduction)}%) = ${formatMoney(expectedBase)}; diferenca para o XML: ${formatMoney(baseDifference)}.`;
-      } else {
-        memory = `pMVAST informado no XML: ${number.format(mvaUsed)}%. Base insuficiente para reconstruir o vBCST.`;
-      }
-      if (!isMvaMode) {
-        memory += ` Atencao: modBCST ${mode || "ausente"} nao indica Margem de Valor Agregado.`;
-      }
-    } else if (isMvaMode && operationBase > 0 && icms.st.base > 0 && hasValidReduction) {
-      mvaUsed = round4(((rawBaseBeforeReduction / operationBase) - 1) * 100);
-      mvaStatus = "inferred";
-      const reductionMemory = reduction > 0
-        ? `Base antes da reducao = vBCST ${formatMoney(icms.st.base)} / (1 - ${number.format(reduction)}%) = ${formatMoney(baseBeforeReduction)}. `
-        : "";
-      memory = `${componentsMemory} ${reductionMemory}MVA = (base antes da reducao ${formatMoney(baseBeforeReduction)} / base da operacao ${formatMoney(operationBase)} - 1) x 100 = ${number.format(mvaUsed)}%.`;
-    } else if (isMvaMode || !mode) {
-      mvaStatus = "unavailable";
-      memory = `${componentsMemory} Nao ha dados suficientes para inferir a MVA com seguranca.`;
-    }
-
+    const analysis = FiscalEngine.calculateIcmsSt({
+      ...itemValues,
+      icmsBase: icms.baseRaw,
+      icmsRate: icms.rateRaw,
+      icmsValue: icms.valueRaw,
+      hasOwnIcmsValue: icms.hasValue,
+      stBase: icms.st.baseRaw,
+      stRate: icms.st.rateRaw,
+      stValue: icms.st.valueRaw,
+      stReduction: icms.st.reductionRaw,
+      mva: icms.st.mvaRaw,
+      hasMva: icms.st.hasMva,
+    });
     return {
       hasST: true,
       ...icms.st,
       mode,
-      modeLabel,
-      operationBase,
-      baseBeforeReduction,
-      mvaUsed,
-      mvaStatus,
-      inferred: mvaStatus === "inferred",
-      expectedBase,
-      baseDifference,
-      memory,
+      modeLabel: icmsSTBaseModes[mode] || "Modalidade nao informada",
+      operationBase: analysis.calculatedValues.baseBeforeMva.value,
+      baseBeforeReduction: analysis.calculatedValues.baseAfterMva.value,
+      mvaUsed: analysis.mva ? analysis.mva.value : null,
+      mvaRawUsed: analysis.mva ? analysis.mva.raw : null,
+      mvaStatus: analysis.mva ? (analysis.mva.source === "xml" ? "informed" : "inferred") : "unavailable",
+      inferred: Boolean(analysis.mva && analysis.mva.source === "inferred"),
+      expectedBase: analysis.calculatedValues.stBase.value,
+      baseDifference: analysis.differences.stBase.difference.value,
+      memory: analysis.explanation,
+      analysis,
     };
   }
 
@@ -1022,7 +1000,7 @@
             <span class="pill info">orig=${escapeHtml(item.icms ? item.icms.origin : "-")}</span>
             <span class="pill info">CST/CSOSN=${escapeHtml(item.icms ? item.icms.cst : "-")}</span>
           </div>
-          ${item.icmsST.hasST ? `<p class="technical-only"><strong>ICMS ST:</strong> vBCST ${formatMoney(item.icmsST.base)}, pICMSST ${number.format(item.icmsST.rate)}%, vICMSST ${formatMoney(item.icmsST.value)}. Modalidade ${escapeHtml(item.icmsST.mode || "-")} - ${escapeHtml(item.icmsST.modeLabel)}. <strong>${escapeHtml(formatMvaSummary(item.icmsST))}</strong> ${escapeHtml(item.icmsST.memory)}</p>` : ""}
+          ${item.icmsST.hasST ? renderIcmsStMemory(item, true) : ""}
         </div>
       </details>
     `;
@@ -1045,18 +1023,62 @@
             <div><span>pRedBCST</span><strong>${number.format(item.icmsST.reduction)}%</strong></div>
             <div><span>FCP-ST</span><strong>${formatMoney(item.icmsST.fcpValue)}</strong></div>
           </div>
-          <p><strong>Modalidade da base:</strong> ${escapeHtml(item.icmsST.modeLabel)}.</p>
-          <p><strong>${escapeHtml(formatMvaSummary(item.icmsST))}</strong> ${escapeHtml(item.icmsST.memory)}</p>
+          ${renderIcmsStMemory(item, false)}
         </div>
       </details>
     `).join("") || emptyState("Nenhum item com ICMS ST encontrado.");
   }
 
+  function renderIcmsStMemory(item, technicalOnly) {
+    const st = item.icmsST;
+    const result = st.analysis;
+    if (!result) return "";
+    const statusMap = {
+      success: ["ok", "Cálculo reproduzido com sucesso"],
+      rounding: ["warn", "Diferença possivelmente causada por arredondamento"],
+      "unidentified-base": ["warn", "Não foi possível identificar integralmente a composição da base"],
+      divergent: ["error", "Cálculo divergente dos valores do XML"],
+    };
+    const status = statusMap[result.status] || statusMap.divergent;
+    const composition = (data) => data.components.map((entry) => `<li><span>${entry.sign < 0 ? "(-)" : "(+)"} ${escapeHtml(entry.label)}</span><strong>${formatMoney(entry.amount.value)}</strong></li>`).join("");
+    const mva = result.mva ? `${formatPercentPrecise(result.mva.raw)} <small>(${result.mva.source === "xml" ? "informada no XML" : "inferida matematicamente"})</small>` : "Não disponível";
+    const adjusted = result.adjustedMva ? formatPercentPrecise(result.adjustedMva.raw) : "Não foi possível calcular automaticamente por ausência das alíquotas necessárias.";
+    return `<section class="fiscal-memory ${technicalOnly ? "technical-only" : ""}">
+      <div class="fiscal-memory-header"><h4>ICMS-ST — Memória de cálculo</h4><span class="severity ${status[0]}">${escapeHtml(status[1])}</span></div>
+      <h5>Dados do XML</h5>
+      <div class="mini-grid fiscal-values">
+        <div><span>Mercadoria</span><strong>${formatMoney(item.total)}</strong></div><div><span>Desconto</span><strong>${formatMoney(item.discount)}</strong></div>
+        <div><span>Frete</span><strong>${formatMoney(item.freight)}</strong></div><div><span>Seguro</span><strong>${formatMoney(item.insurance)}</strong></div>
+        <div><span>Outras despesas</span><strong>${formatMoney(item.other)}</strong></div><div><span>IPI</span><strong>${formatMoney(item.ipi ? item.ipi.value : 0)}</strong></div>
+        <div><span>Base ICMS</span><strong>${formatMoney(item.icms.base)}</strong></div><div><span>Alíquota ICMS</span><strong>${formatPercentPrecise(item.icms.rateRaw)}</strong></div>
+        <div><span>ICMS próprio</span><strong>${formatMoney(item.icms.value)}</strong></div><div><span>MVA</span><strong>${mva}</strong></div>
+        <div><span>Redução BC-ST</span><strong>${formatPercentPrecise(item.icms.st.reductionRaw)}</strong></div><div><span>Base ICMS-ST</span><strong>${formatMoney(st.base)}</strong></div>
+        <div><span>Alíquota ICMS-ST</span><strong>${formatPercentPrecise(item.icms.st.rateRaw)}</strong></div><div><span>ICMS-ST</span><strong>${formatMoney(st.value)}</strong></div>
+        <div><span>FCP-ST</span><strong>${formatMoney(st.fcpValue)}</strong></div>
+      </div>
+      <div class="fiscal-columns"><div><h5>Composição da Base ICMS</h5><ul class="calculation-list">${composition(result.ownBaseComposition)}<li class="total"><span>(=) Base calculada</span><strong>${formatMoney(result.ownBaseComposition.calculated.value)}</strong></li></ul><p>Confiança: <strong>${escapeHtml(result.ownBaseComposition.confidence)}</strong>.</p></div>
+      <div><h5>Composição provável da Base ICMS-ST</h5><ul class="calculation-list">${composition(result.stBaseComposition)}<li><span>(=) Base antes da MVA</span><strong>${formatMoney(result.calculatedValues.baseBeforeMva.value)}</strong></li><li><span>(+) MVA ${result.mva ? formatPercentPrecise(result.mva.raw) : "não disponível"}</span><strong>${formatMoney(result.calculatedValues.baseAfterMva.value)}</strong></li><li class="total"><span>(=) Base ST calculada</span><strong>${formatMoney(result.calculatedValues.stBase.value)}</strong></li></ul></div></div>
+      <h5>Reconstrução e conferência</h5>
+      <div class="calculation-steps">
+        <p>ICMS próprio calculado = ${formatMoney(result.ownIcms.base.value)} × ${formatPercentPrecise(result.ownIcms.rate.raw)} = <strong>${formatMoney(result.ownIcms.calculated.value)}</strong>; XML ${formatMoney(result.ownIcms.xml.value)}; diferença ${formatMoney(result.ownIcms.comparison.difference.value)}.</p>
+        <p>Base ST = ${formatMoney(result.calculatedValues.baseAfterMva.value)} × (1 − ${formatPercentPrecise(item.icms.st.reductionRaw)}) = <strong>${formatMoney(result.calculatedValues.stBase.value)}</strong>; XML ${formatMoney(st.base)}; diferença ${formatMoney(result.differences.stBase.difference.value)}.</p>
+        <p>ICMS presumido = ${formatMoney(st.base)} × ${formatPercentPrecise(item.icms.st.rateRaw)} = ${formatMoney(result.calculatedValues.presumedIcms.value)}. ICMS-ST = presumido − ICMS próprio ${item.icms.hasValue ? "XML" : "calculado"} (${formatMoney(result.calculatedValues.ownDeduction.value)}) = <strong>${formatMoney(result.calculatedValues.stValue.value)}</strong>; XML ${formatMoney(st.value)}; diferença ${formatMoney(result.differences.stValue.difference.value)}.</p>
+        <p>Validação reversa: ICMS próprio implicitamente deduzido = <strong>${formatMoney(result.reverse.implicit.value)}</strong>; diferença para vICMS XML ${formatMoney(result.reverse.xmlComparison.difference.value)}.</p>
+      </div>
+      <p><strong>MVA ajustada:</strong> ${escapeHtml(adjusted)}</p><p class="fiscal-explanation">${escapeHtml(result.explanation)}</p>
+    </section>`;
+  }
+
   function formatMvaSummary(icmsST) {
-    if (icmsST.mvaStatus === "informed") return `MVA informada: ${number.format(icmsST.mvaUsed)}%.`;
-    if (icmsST.mvaStatus === "inferred") return `MVA estimada: ${number.format(icmsST.mvaUsed)}%.`;
+    if (icmsST.mvaStatus === "informed") return `MVA informada: ${formatPercentPrecise(icmsST.mvaRawUsed)}.`;
+    if (icmsST.mvaStatus === "inferred") return `MVA estimada: ${formatPercentPrecise(icmsST.mvaRawUsed)}.`;
     if (icmsST.mvaStatus === "unavailable") return "MVA: nao calculada.";
     return "MVA: nao aplicavel.";
+  }
+
+  function formatPercentPrecise(value) {
+    const parsed = Number(value || 0);
+    return `${new Intl.NumberFormat("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 6 }).format(parsed)}%`;
   }
 
   function renderImports(analysis) {

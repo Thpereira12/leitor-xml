@@ -819,6 +819,18 @@ tr.tax-warning td {
   padding: 0 14px 14px;
 }
 
+.fiscal-memory { display: grid; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.fiscal-memory-header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; align-items: center; }
+.fiscal-memory h4, .fiscal-memory h5, .fiscal-memory p { margin: 0; }
+.fiscal-memory h5 { color: var(--accent-strong); }
+.fiscal-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.calculation-list { display: grid; gap: 6px; padding: 0; list-style: none; }
+.calculation-list li { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px dashed var(--line); padding-bottom: 5px; }
+.calculation-list .total { border-bottom-style: solid; font-weight: 900; }
+.calculation-steps { display: grid; gap: 8px; padding: 12px; border-left: 3px solid var(--accent); background: var(--accent-soft); }
+.fiscal-explanation { padding: 12px; border-radius: 8px; background: var(--warn-soft); }
+.fiscal-values small { display: block; color: var(--muted); }
+
 .mini-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(120px, 1fr));
@@ -878,6 +890,7 @@ tr.tax-warning td {
 }
 
 @media (max-width: 1100px) {
+  .fiscal-columns { grid-template-columns: 1fr; }
   .app-shell {
     grid-template-columns: 1fr;
   }
